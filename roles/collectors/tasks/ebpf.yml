@@ -1,11 +1,25 @@
 ---
-- name: Reset eBPF bronze logs before collector start
-  ansible.builtin.copy:
-    dest: "{{ item }}"
+- name: Ensure eBPF bronze logs exist without truncation
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
     owner: root
     group: root
     mode: "0644"
-    content: ""
+  loop:
+    - /var/lib/open-creel/data/bronze/ebpf/exec.log
+    - /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
+    - /var/lib/open-creel/data/bronze/ebpf/connect.log
+
+- name: Remove non-JSON lines from eBPF bronze logs
+  ansible.builtin.shell: |
+    set -euo pipefail
+    tmp_file="$(mktemp)"
+    awk '/^[[:space:]]*\{/{print}' "{{ item }}" > "${tmp_file}"
+    install -o root -g root -m 0644 "${tmp_file}" "{{ item }}"
+    rm -f "${tmp_file}"
+  args:
+    executable: /bin/bash
   loop:
     - /var/lib/open-creel/data/bronze/ebpf/exec.log
     - /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
@@ -37,6 +51,11 @@
       {
         delete(@tracked[pid]);
       }
+
+      END
+      {
+        clear(@tracked);
+      }
   register: ebpf_exec_script_write
 
 - name: Write eBPF file access trace script
@@ -62,6 +81,11 @@
       /@tracked[pid]/
       {
         delete(@tracked[pid]);
+      }
+
+      END
+      {
+        clear(@tracked);
       }
 
       tracepoint:syscalls:sys_enter_openat
@@ -90,10 +114,10 @@
       tracepoint:syscalls:sys_enter_connect
       /args->addrlen >= 16/
       {
-        $sa = (struct sockaddr *)args->uservaddr;
+        $sa = (struct sockaddr *)uptr(args->uservaddr);
         if ($sa->sa_family == 2) {
           $ppid = curtask->real_parent->tgid;
-          $in = (struct sockaddr_in *)args->uservaddr;
+          $in = (struct sockaddr_in *)uptr(args->uservaddr);
           $dst_port = (($in->sin_port & 0xff) << 8) | (($in->sin_port >> 8) & 0xff);
           printf("{\"time_ns\":%llu,\"pid\":%d,\"ppid\":%d,\"uid\":%d,\"comm\":\"%s\",\"dst_ip\":\"%s\",\"dst_port\":%d}\n",
                  nsecs, pid, $ppid, uid, comm, ntop($in->sin_addr.s_addr), $dst_port);
