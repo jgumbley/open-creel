@@ -11,11 +11,21 @@ from pathlib import Path
 from typing import Any
 
 OCSF_VERSION = "1.7.0"
-CATEGORY_UID = 4
-CLASS_UID = 4001
-ACTIVITY_ID = 6
-SEVERITY_ID = 1
-TYPE_UID = CLASS_UID * 100 + ACTIVITY_ID
+
+NETWORK_CATEGORY_UID = 4
+NETWORK_CLASS_UID = 4001
+NETWORK_ACTIVITY_ID = 6
+NETWORK_SEVERITY_ID = 1
+NETWORK_TYPE_UID = NETWORK_CLASS_UID * 100 + NETWORK_ACTIVITY_ID
+
+FINDING_CATEGORY_UID = 2
+FINDING_CLASS_UID = 2004
+FINDING_ACTIVITY_ID = 1
+FINDING_SEVERITY_LOW_ID = 2
+FINDING_TYPE_UID = FINDING_CLASS_UID * 100 + FINDING_ACTIVITY_ID
+
+DNS_COVERAGE_RULE_UID = "gold_dns_names_not_covered"
+DNS_COVERAGE_RULE_NAME = "New DNS Names Outside Existing Coverage"
 
 MAPPED_ZEEK_KEYS = {
     "ts",
@@ -78,11 +88,11 @@ def map_conn_event(record: dict[str, Any], raw_line: str, bronze_uri: str) -> tu
     time_ms = int(ts * 1000)
     event: dict[str, Any] = {
         "time": time_ms,
-        "activity_id": ACTIVITY_ID,
-        "category_uid": CATEGORY_UID,
-        "class_uid": CLASS_UID,
-        "severity_id": SEVERITY_ID,
-        "type_uid": TYPE_UID,
+        "activity_id": NETWORK_ACTIVITY_ID,
+        "category_uid": NETWORK_CATEGORY_UID,
+        "class_uid": NETWORK_CLASS_UID,
+        "severity_id": NETWORK_SEVERITY_ID,
+        "type_uid": NETWORK_TYPE_UID,
         "metadata": {
             "version": OCSF_VERSION,
             "product": {
@@ -166,12 +176,21 @@ def map_conn_event(record: dict[str, Any], raw_line: str, bronze_uri: str) -> tu
     return partition_date, ts, event
 
 
-def load_dns_index(bronze_path: Path) -> dict[tuple[str, str], list[tuple[float, float, str]]]:
+def normalize_dns_name(name: str) -> str:
+    return name.strip().rstrip(".").lower()
+
+
+def load_dns_index(
+    bronze_path: Path,
+) -> tuple[dict[tuple[str, str], list[tuple[float, float, str]]], list[str], float | None]:
     dns_path = bronze_path.with_name("dns.log")
     if not dns_path.exists():
         raise FileNotFoundError(f"dns input does not exist: {dns_path}")
 
     index: dict[tuple[str, str], list[tuple[float, float, str]]] = defaultdict(list)
+    dns_names: list[str] = []
+    seen_dns_names: set[str] = set()
+    latest_dns_ts: float | None = None
     with dns_path.open("r", encoding="utf-8") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             if not raw_line.strip():
@@ -187,8 +206,15 @@ def load_dns_index(bronze_path: Path) -> dict[tuple[str, str], list[tuple[float,
             ts = as_float(record.get("ts"))
             if ts is None:
                 raise ValueError(f"{dns_path}:{line_number}: required field 'ts' is missing or invalid")
+            if latest_dns_ts is None or ts > latest_dns_ts:
+                latest_dns_ts = ts
 
             query = record.get("query")
+            normalized_query = normalize_dns_name(query) if isinstance(query, str) else ""
+            if normalized_query and normalized_query not in seen_dns_names:
+                seen_dns_names.add(normalized_query)
+                dns_names.append(normalized_query)
+
             if not isinstance(query, str) or not query:
                 continue
 
@@ -220,7 +246,7 @@ def load_dns_index(bronze_path: Path) -> dict[tuple[str, str], list[tuple[float,
 
     for values in index.values():
         values.sort(key=lambda item: item[0])
-    return index
+    return index, dns_names, latest_dns_ts
 
 
 def resolve_hostname(
@@ -246,20 +272,120 @@ def resolve_hostname(
     return None
 
 
-def run(bronze_uri: str, silver_uri: str, part_name: str) -> int:
+def dns_name_is_covered(name: str, existing_names: set[str]) -> bool:
+    for existing_name in existing_names:
+        if name == existing_name:
+            return True
+        if name.endswith(f".{existing_name}"):
+            return True
+    return False
+
+
+def find_uncovered_dns_name_additions(dns_names: list[str]) -> tuple[list[str], list[str]]:
+    existing_names: list[str] = []
+    existing_lookup: set[str] = set()
+    new_names: list[str] = []
+
+    for dns_name in dns_names:
+        normalized = normalize_dns_name(dns_name)
+        if not normalized or normalized in existing_lookup:
+            continue
+        if existing_lookup and not dns_name_is_covered(normalized, existing_lookup):
+            new_names.append(normalized)
+        existing_names.append(normalized)
+        existing_lookup.add(normalized)
+
+    new_name_lookup = set(new_names)
+    covered_names = [name for name in existing_names if name not in new_name_lookup]
+    return covered_names, new_names
+
+
+def map_dns_name_coverage_detection_event(
+    bronze_uri: str,
+    detection_time_ms: int,
+    covered_names: list[str],
+    new_names: list[str],
+) -> dict[str, Any]:
+    return {
+        "time": detection_time_ms,
+        "activity_id": FINDING_ACTIVITY_ID,
+        "category_uid": FINDING_CATEGORY_UID,
+        "class_uid": FINDING_CLASS_UID,
+        "severity_id": FINDING_SEVERITY_LOW_ID,
+        "type_uid": FINDING_TYPE_UID,
+        "metadata": {
+            "version": OCSF_VERSION,
+            "product": {
+                "name": "open-creel",
+                "vendor_name": "open-creel",
+            },
+            "log_name": "open-creel.gold.dns",
+            "log_provider": "open-creel",
+            "log_source": bronze_uri,
+            "original_time": detection_time_ms,
+        },
+        "finding_info": {
+            "title": DNS_COVERAGE_RULE_NAME,
+            "desc": "New DNS names were observed that are not covered by existing names in this ingest batch.",
+            "uid": DNS_COVERAGE_RULE_UID,
+        },
+        "unmapped": {
+            "existing_dns_names": covered_names,
+            "new_dns_names": new_names,
+            "new_dns_name_count": len(new_names),
+            "rule_uid": DNS_COVERAGE_RULE_UID,
+        },
+    }
+
+
+def write_gold_dns_detection(
+    bronze_uri: str,
+    gold_root: Path,
+    part_name: str,
+    dns_names: list[str],
+    latest_dns_ts: float | None,
+) -> int:
+    class_root = gold_root / f"class_uid={FINDING_CLASS_UID}"
+    if class_root.exists():
+        shutil.rmtree(class_root)
+
+    covered_names, new_names = find_uncovered_dns_name_additions(dns_names)
+    if not new_names:
+        return 0
+
+    detection_ts = latest_dns_ts if latest_dns_ts is not None else datetime.now(tz=timezone.utc).timestamp()
+    detection_time_ms = int(detection_ts * 1000)
+    event = map_dns_name_coverage_detection_event(
+        bronze_uri=bronze_uri,
+        detection_time_ms=detection_time_ms,
+        covered_names=covered_names,
+        new_names=new_names,
+    )
+
+    partition_date = datetime.fromtimestamp(detection_time_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    out_path = class_root / f"date={partition_date}" / part_name
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, separators=(",", ":"), sort_keys=True))
+        handle.write("\n")
+    return 1
+
+
+def run(bronze_uri: str, silver_uri: str, gold_uri: str | None, part_name: str) -> int:
     bronze_path = resolve_uri(bronze_uri)
     silver_root = resolve_uri(silver_uri)
-    class_root = silver_root / f"class_uid={CLASS_UID}"
+    silver_class_root = silver_root / f"class_uid={NETWORK_CLASS_UID}"
+    gold_root = resolve_uri(gold_uri) if gold_uri else None
 
     if not bronze_path.exists():
         raise FileNotFoundError(f"bronze input does not exist: {bronze_path}")
 
-    dns_index = load_dns_index(bronze_path)
+    dns_index, dns_names, latest_dns_ts = load_dns_index(bronze_path)
 
     # Idempotent run semantics: rebuild this class partition from bronze each run.
-    if class_root.exists():
-        shutil.rmtree(class_root)
-    class_root.mkdir(parents=True, exist_ok=True)
+    if silver_class_root.exists():
+        shutil.rmtree(silver_class_root)
+    silver_class_root.mkdir(parents=True, exist_ok=True)
 
     outputs: dict[Path, Any] = {}
     processed = 0
@@ -288,7 +414,7 @@ def run(bronze_uri: str, silver_uri: str, part_name: str) -> int:
                 if resolved_name and "dst_endpoint" in event:
                     event["dst_endpoint"]["hostname"] = resolved_name
 
-                out_path = class_root / f"date={partition_date}" / part_name
+                out_path = silver_class_root / f"date={partition_date}" / part_name
                 if out_path not in outputs:
                     out_path.parent.mkdir(parents=True, exist_ok=True)
                     outputs[out_path] = out_path.open("w", encoding="utf-8")
@@ -299,26 +425,41 @@ def run(bronze_uri: str, silver_uri: str, part_name: str) -> int:
         for output in outputs.values():
             output.close()
 
+    gold_detections = 0
+    if gold_root is not None:
+        gold_detections = write_gold_dns_detection(
+            bronze_uri=bronze_uri,
+            gold_root=gold_root,
+            part_name=part_name,
+            dns_names=dns_names,
+            latest_dns_ts=latest_dns_ts,
+        )
+
     print(
         "worker complete",
         f"processed={processed}",
         f"output_files={len(outputs)}",
         f"silver_root={silver_root}",
+        f"gold_detections={gold_detections}",
+        f"gold_root={gold_root}" if gold_root is not None else "gold_root=disabled",
     )
     return processed
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Map Zeek conn.log JSON lines to OCSF network_activity JSONL.")
+    parser = argparse.ArgumentParser(
+        description="Map Zeek conn.log JSON lines to OCSF network_activity JSONL and optional gold detections."
+    )
     parser.add_argument("--bronze-uri", required=True, help="Input conn.log path or dbfs:/ URI.")
     parser.add_argument("--silver-uri", required=True, help="Output silver root path or dbfs:/ URI.")
+    parser.add_argument("--gold-uri", help="Output gold root path or dbfs:/ URI.")
     parser.add_argument("--part-name", default="part-00000.jsonl", help="Output part filename per partition.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    run(args.bronze_uri, args.silver_uri, args.part_name)
+    run(args.bronze_uri, args.silver_uri, args.gold_uri, args.part_name)
     return 0
 
 
