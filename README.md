@@ -16,5 +16,5 @@ Thin slice:
   - OCSF `process_activity` (`class_uid=1007`) from eBPF `exec.log` with process lineage.
   - OCSF `file_activity` (`class_uid=1001`) from eBPF `fileaccess.log`.
 - Gold: OCSF findings (`class_uid=2004`) for DNS coverage drift, unexpected child processes in the agent tree, and sensitive file reads by unexpected processes.
-- Run Silver: `make silver` (inspect latest record with `make silver-proof`).
-- Run Gold: `make gold` (inspect latest record with `make gold-proof`).
+- Run Silver: `make silver` (inspect latest record with `make silver-show-latest`).
+- Run Gold: `make gold` (inspect latest record with `make gold-show-latest`).

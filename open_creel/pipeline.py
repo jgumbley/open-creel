@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import ipaddress
 import json
 import re
@@ -150,8 +149,8 @@ MAPPED_CONNECT_KEYS = TIME_FIELD_KEYS | {
 AGENT_TREE_MARKERS = (
     "codex",
     "open-creel",
-    "stub_worker.py",
-    "stub_spawner.py",
+    "open_creel",
+    "open_creel.cli",
     "pane.sh",
     "sandbox",
 )
@@ -180,8 +179,6 @@ UNEXPECTED_CHILD_PROCESS_ALLOWLIST = {
     "sed",
     "sh",
     "sort",
-    "stub_spawner.py",
-    "stub_worker.py",
     "tail",
     "tee",
     "tr",
@@ -203,8 +200,6 @@ SENSITIVE_FILE_PROCESS_ALLOWLIST = {
     "rg",
     "sed",
     "sh",
-    "stub_spawner.py",
-    "stub_worker.py",
     "tail",
     "uv",
 }
@@ -372,7 +367,7 @@ def partition_date_from_seconds(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def iter_json_lines(path: Path) -> list[tuple[int, str, dict[str, Any]]]:
+def read_json_lines(path: Path) -> list[tuple[int, str, dict[str, Any]]]:
     rows: list[tuple[int, str, dict[str, Any]]] = []
     with path.open("r", encoding="utf-8") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
@@ -428,7 +423,7 @@ def load_dns_index(
     seen_dns_names: set[str] = set()
     latest_dns_ts: float | None = None
 
-    for line_number, _, record in iter_json_lines(dns_path):
+    for line_number, _, record in read_json_lines(dns_path):
         ts = record_time_seconds(record)
         if ts is None:
             raise ValueError(f"{dns_path}:{line_number}: required time field is missing or invalid")
@@ -647,12 +642,12 @@ def map_exec_event(observation: dict[str, Any], exec_uri: str) -> tuple[str, dic
     return partition_date_from_seconds(ts), event
 
 
-def build_process_activity_events(
+def build_process_activity_bundle(
     exec_path: Path,
     exec_uri: str,
 ) -> tuple[list[tuple[str, dict[str, Any]]], list[dict[str, Any]], dict[int, dict[str, Any]]]:
     observations: list[dict[str, Any]] = []
-    for line_number, raw_line, record in iter_json_lines(exec_path):
+    for line_number, raw_line, record in read_json_lines(exec_path):
         observation = parse_exec_observation(record, line_number, raw_line, exec_path)
         observations.append(observation)
 
@@ -826,7 +821,7 @@ def build_file_activity_events(
 ) -> tuple[list[tuple[str, dict[str, Any]]], list[dict[str, Any]]]:
     observations: list[dict[str, Any]] = []
     events: list[tuple[str, dict[str, Any]]] = []
-    for line_number, raw_line, record in iter_json_lines(fileaccess_path):
+    for line_number, raw_line, record in read_json_lines(fileaccess_path):
         observation = parse_file_observation(record, line_number, raw_line, fileaccess_path, process_catalog)
         if observation is None:
             continue
@@ -891,7 +886,7 @@ def load_connect_index(
     process_catalog: dict[int, dict[str, Any]],
 ) -> dict[tuple[str, int], list[dict[str, Any]]]:
     index: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
-    for line_number, _, record in iter_json_lines(connect_path):
+    for line_number, _, record in read_json_lines(connect_path):
         observation = parse_connect_observation(record, line_number, connect_path, process_catalog)
         if observation is None:
             continue
@@ -1033,7 +1028,7 @@ def build_network_activity_events(
     connect_index: dict[tuple[str, int], list[dict[str, Any]]],
 ) -> list[tuple[str, dict[str, Any]]]:
     events: list[tuple[str, dict[str, Any]]] = []
-    for line_number, raw_line, record in iter_json_lines(conn_path):
+    for line_number, raw_line, record in read_json_lines(conn_path):
         partition_date, conn_ts, event = map_conn_event(record, raw_line, conn_uri, actor_process=None)
 
         resolved_name = resolve_hostname(
@@ -1364,7 +1359,7 @@ def write_gold_findings(
     return written
 
 
-def run(
+def run_bronze_to_ocsf_pipeline(
     bronze_conn_uri: str,
     bronze_dns_uri: str,
     bronze_ebpf_exec_uri: str,
@@ -1397,7 +1392,7 @@ def run(
             raise FileNotFoundError(f"bronze input does not exist: {input_path}")
 
     dns_index, dns_names, latest_dns_ts = load_dns_index(dns_path)
-    process_events, exec_observations, process_catalog = build_process_activity_events(exec_path, bronze_ebpf_exec_uri)
+    process_events, exec_observations, process_catalog = build_process_activity_bundle(exec_path, bronze_ebpf_exec_uri)
     connect_index = load_connect_index(connect_path, process_catalog)
     network_events = build_network_activity_events(conn_path, bronze_conn_uri, dns_index, connect_index)
     file_events, file_observations = build_file_activity_events(fileaccess_path, bronze_ebpf_fileaccess_uri, process_catalog)
@@ -1434,7 +1429,7 @@ def run(
     total_processed = network_written + process_written + file_written
     total_output_files = network_output_files + process_output_files + file_output_files
     print(
-        "worker complete",
+        "pipeline complete",
         f"network_events={network_written}",
         f"process_events={process_written}",
         f"file_events={file_written}",
@@ -1445,48 +1440,3 @@ def run(
         f"gold_root={gold_root}" if gold_root is not None else "gold_root=disabled",
     )
     return total_processed
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Map Zeek and eBPF bronze logs to OCSF silver parquet "
-            "and optional gold detections."
-        )
-    )
-    parser.add_argument("--bronze-conn-uri", required=True, help="Input Zeek conn.log path or dbfs:/ URI.")
-    parser.add_argument("--bronze-dns-uri", required=True, help="Input Zeek dns.log path or dbfs:/ URI.")
-    parser.add_argument("--bronze-ebpf-exec-uri", required=True, help="Input eBPF exec.log path or dbfs:/ URI.")
-    parser.add_argument(
-        "--bronze-ebpf-fileaccess-uri",
-        required=True,
-        help="Input eBPF fileaccess.log path or dbfs:/ URI.",
-    )
-    parser.add_argument(
-        "--bronze-ebpf-connect-uri",
-        required=True,
-        help="Input eBPF connect.log path or dbfs:/ URI.",
-    )
-    parser.add_argument("--silver-uri", required=True, help="Output silver root path or dbfs:/ URI.")
-    parser.add_argument("--gold-uri", help="Output gold root path or dbfs:/ URI.")
-    parser.add_argument("--part-name", default="part-00000.parquet", help="Output parquet filename per partition.")
-    return parser.parse_args()
-
-
-def main() -> int:
-    args = parse_args()
-    run(
-        bronze_conn_uri=args.bronze_conn_uri,
-        bronze_dns_uri=args.bronze_dns_uri,
-        bronze_ebpf_exec_uri=args.bronze_ebpf_exec_uri,
-        bronze_ebpf_fileaccess_uri=args.bronze_ebpf_fileaccess_uri,
-        bronze_ebpf_connect_uri=args.bronze_ebpf_connect_uri,
-        silver_uri=args.silver_uri,
-        gold_uri=args.gold_uri,
-        part_name=args.part_name,
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
