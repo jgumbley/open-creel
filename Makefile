@@ -9,6 +9,7 @@ help:
 	@echo "  make silver-proof    Show latest mapped OCSF silver record"
 	@echo "  make gold            Run stub spawner with gold detection rules"
 	@echo "  make gold-proof      Show latest mapped OCSF gold detection record"
+	@echo "  make gold-list       List all mapped OCSF gold detection records"
 	@echo "  make clean-silver    Remove generated silver output"
 	@echo "  make clean-gold      Remove generated gold output"
 
@@ -27,7 +28,7 @@ SILVER_ROOT_URI ?= /tmp/open-creel/data/silver/ocsf
 GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
 PART_NAME ?= part-00000.jsonl
 
-.PHONY: infra bronze silver silver-proof gold gold-proof clean-silver clean-gold
+.PHONY: infra bronze silver silver-proof gold gold-proof gold-list clean-silver clean-gold
 
 infra:
 	ansible-playbook creel.yml -c local -K
@@ -91,6 +92,26 @@ gold-proof:
 	echo "gold_file=$$file"; \
 	echo "gold_rows=$$(wc -l < "$$file")"; \
 	tail -n 1 "$$file"
+
+gold-list:
+	@set -eu; \
+	class_dir="$(GOLD_ROOT_URI)/class_uid=2004"; \
+	if [ ! -d "$$class_dir" ]; then \
+		echo "gold_rows=0"; \
+		echo "gold_file=(none)"; \
+		echo "no gold detections present"; \
+		exit 0; \
+	fi; \
+	file="$$(find "$$class_dir" -type f -name '*.jsonl' | sort | tail -n 1)"; \
+	if [ -z "$$file" ]; then \
+		echo "gold_rows=0"; \
+		echo "gold_file=(none)"; \
+		echo "no gold detections present"; \
+		exit 0; \
+	fi; \
+	echo "gold_file=$$file"; \
+	echo "gold_rows=$$(wc -l < "$$file")"; \
+	nl -ba "$$file"
 
 clean-silver:
 	rm -rf "$(SILVER_ROOT_URI)"
