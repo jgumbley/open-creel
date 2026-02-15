@@ -31,6 +31,22 @@ if [ -n "$current_height" ] && [ "$current_height" -gt 0 ] 2>/dev/null; then
   [ "$pane_lines" -lt 3 ] && pane_lines=3
 fi
 
+session_id="$(tmux display-message -p '#{session_id}')"
+existing_pane="$(
+  tmux list-panes -t "$session_id" -F '#{pane_id}::#{pane_title}' |
+    awk -F '::' -v label="$pane_label" '$2 == label { print $1; exit }'
+)"
+
+if [ -n "$existing_pane" ]; then
+  cat <<EOF
+Pane "$existing_pane" for "$pane_label" already exists in this session.
+No new pane was created.
+To rerun in that pane: tmux send-keys -t $existing_pane C-m
+To capture output: tmux capture-pane -pt $existing_pane
+EOF
+  exit 0
+fi
+
 runner_script="$(mktemp)"
 cat > "$runner_script" <<'RUNNER_EOF'
 #!/usr/bin/env bash
@@ -55,9 +71,11 @@ cat <<EOF
 If you are prompted for sudo/BECOME credentials, type them directly in this pane.
 Secrets typed here are not echoed, so they will not appear in captured output.
 
-When the command finishes you can press Enter in this pane to rerun it, or close
-the pane (Ctrl-b x) to stop. The main terminal/agent can read progress via tmux
-capture-pane.
+When the command finishes, reuse this same pane to rerun it:
+- press Enter in this pane, or
+- from the main terminal run: tmux send-keys -t "$TMUX_PANE" C-m
+Do not create a new pane unless you want another concurrent run.
+The main terminal/agent can read progress via tmux capture-pane.
 
 EOF
 
@@ -72,7 +90,9 @@ while :; do
   cat <<EOF
 
 [agent:${pane_label}] Command exited with status ${status}.
-Press Enter in this pane to run it again, or close the pane (Ctrl-b x) to stop.
+Reuse this same pane to run again: press Enter.
+From the main terminal you can also run: tmux send-keys -t "$TMUX_PANE" C-m
+Close the pane (Ctrl-b x) to stop.
 
 EOF
 
@@ -94,5 +114,6 @@ Started tmux pane "$pane_id" for "$pane_label".
 Command: $cmd_display
 Watch the pane above for prompts. Type any sudo/BECOME passwords there, not here.
 To capture its output later: tmux capture-pane -pt $pane_id
-The pane will stay open after each run; press Enter in that pane to rerun, or close it to stop.
+To rerun in the same pane (no new pane needed): tmux send-keys -t $pane_id C-m
+The pane stays open after each run; press Enter in that pane to rerun, or close it to stop.
 EOF

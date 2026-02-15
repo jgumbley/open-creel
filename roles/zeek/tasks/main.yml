@@ -22,3 +22,138 @@
   ansible.builtin.apt:
     name: zeek
     state: present
+
+- name: Install base dependencies for runtime and DuckDB install
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - iproute2
+    state: present
+
+- name: Create OpenCreel data and config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/lib/open-creel/data
+    - /var/lib/open-creel/data/bronze/zeek
+    - /var/lib/open-creel/data/silver
+    - /var/lib/open-creel/data/gold
+    - /etc/open-creel/zeek
+
+- name: Write Zeek JSON logging script
+  ansible.builtin.copy:
+    dest: /etc/open-creel/zeek/open-creel.zeek
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      @load policy/tuning/json-logs.zeek
+      redef Log::default_logdir = "/var/lib/open-creel/data/bronze/zeek";
+  register: zeek_script_write
+
+- name: Pick capture interface from default route
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'
+  register: creel_iface_cmd
+  changed_when: false
+  args:
+    executable: /bin/bash
+
+- name: Set capture interface fact
+  ansible.builtin.set_fact:
+    creel_iface: "{{ creel_iface_cmd.stdout }}"
+
+- name: Install open-creel Zeek systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-zeek.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel Zeek sensor (writes JSON logs to bronze)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/opt/zeek/bin/zeek -i {{ creel_iface }} /etc/open-creel/zeek/open-creel.zeek
+      Restart=always
+      RestartSec=3
+
+      [Install]
+      WantedBy=multi-user.target
+  register: zeek_unit_write
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start open-creel Zeek service
+  ansible.builtin.systemd:
+    name: open-creel-zeek.service
+    enabled: true
+    state: started
+
+- name: Restart open-creel Zeek service when unit or script changes
+  ansible.builtin.systemd:
+    name: open-creel-zeek.service
+    state: restarted
+  when: zeek_script_write.changed or zeek_unit_write.changed
+
+- name: Install DuckDB CLI if missing
+  ansible.builtin.shell: |
+    set -euo pipefail
+    curl -fsSL https://install.duckdb.org | sh
+  args:
+    executable: /bin/bash
+    creates: /root/.duckdb/cli/latest/duckdb
+
+- name: Link duckdb into /usr/local/bin
+  ansible.builtin.file:
+    src: /root/.duckdb/cli/latest/duckdb
+    dest: /usr/local/bin/duckdb
+    state: link
+    force: true
+
+- name: Create silver DuckDB placeholder database
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/duckdb
+      - /var/lib/open-creel/data/silver/creel.duckdb
+      - "SELECT 1;"
+  changed_when: false
+
+- name: Generate one outbound request for Zeek logs
+  ansible.builtin.command: curl -fsS https://example.com
+  changed_when: false
+
+- name: Wait for conn.log in bronze
+  ansible.builtin.wait_for:
+    path: /var/lib/open-creel/data/bronze/zeek/conn.log
+    timeout: 15
+
+- name: List bronze Zeek log directory
+  ansible.builtin.command: ls -lah /var/lib/open-creel/data/bronze/zeek
+  register: zeek_ls
+  changed_when: false
+
+- name: Tail latest conn.log line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/zeek/conn.log
+  register: zeek_tail
+  changed_when: false
+
+- name: Print bronze log proof
+  ansible.builtin.debug:
+    msg:
+      - "iface={{ creel_iface }}"
+      - "{{ zeek_ls.stdout }}"
+      - "last conn.log line:"
+      - "{{ zeek_tail.stdout }}"
