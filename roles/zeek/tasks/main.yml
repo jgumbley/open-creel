@@ -26,6 +26,7 @@
 - name: Install base dependencies for runtime and DuckDB install
   ansible.builtin.apt:
     name:
+      - bpftrace
       - ca-certificates
       - curl
       - gnupg
@@ -42,9 +43,23 @@
   loop:
     - /var/lib/open-creel/data
     - /var/lib/open-creel/data/bronze/zeek
+    - /var/lib/open-creel/data/bronze/ebpf
     - /var/lib/open-creel/data/silver
     - /var/lib/open-creel/data/gold
     - /etc/open-creel/zeek
+    - /etc/open-creel/ebpf
+
+- name: Reset eBPF bronze logs before collector start
+  ansible.builtin.copy:
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: ""
+  loop:
+    - /var/lib/open-creel/data/bronze/ebpf/exec.log
+    - /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
+    - /var/lib/open-creel/data/bronze/ebpf/connect.log
 
 - name: Write Zeek JSON logging script
   ansible.builtin.copy:
@@ -92,6 +107,186 @@
       WantedBy=multi-user.target
   register: zeek_unit_write
 
+- name: Write eBPF exec trace script
+  ansible.builtin.copy:
+    dest: /etc/open-creel/ebpf/exec.bt
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      tracepoint:sched:sched_process_exec
+      {
+        $ppid = curtask->real_parent->tgid;
+        $seed = comm == "openclaw" ||
+                str(args->filename) == "/usr/bin/openclaw" ||
+                str(args->filename) == "/usr/local/bin/openclaw" ||
+                str(args->filename) == "/opt/openclaw/bin/openclaw";
+        if ($seed || @tracked[$ppid]) {
+          @tracked[pid] = 1;
+          printf("{\"time_ns\":%llu,\"pid\":%d,\"ppid\":%d,\"uid\":%d,\"comm\":\"%s\",\"binary\":\"%s\",\"argv\":[\"%s\"],\"cwd\":null}\n",
+                 nsecs, pid, $ppid, uid, comm, str(args->filename), str(args->filename));
+        }
+      }
+
+      tracepoint:sched:sched_process_exit
+      /@tracked[pid]/
+      {
+        delete(@tracked[pid]);
+      }
+  register: ebpf_exec_script_write
+
+- name: Write eBPF file access trace script
+  ansible.builtin.copy:
+    dest: /etc/open-creel/ebpf/fileaccess.bt
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      tracepoint:sched:sched_process_exec
+      {
+        $ppid = curtask->real_parent->tgid;
+        $seed = comm == "openclaw" ||
+                str(args->filename) == "/usr/bin/openclaw" ||
+                str(args->filename) == "/usr/local/bin/openclaw" ||
+                str(args->filename) == "/opt/openclaw/bin/openclaw";
+        if ($seed || @tracked[$ppid]) {
+          @tracked[pid] = 1;
+        }
+      }
+
+      tracepoint:sched:sched_process_exit
+      /@tracked[pid]/
+      {
+        delete(@tracked[pid]);
+      }
+
+      tracepoint:syscalls:sys_enter_openat
+      /@tracked[pid]/
+      {
+        $ppid = curtask->real_parent->tgid;
+        $accmode = args->flags & 3;
+        $read = $accmode == 0 || $accmode == 2;
+        $write = $accmode == 1 || $accmode == 2;
+        $create = (args->flags & 64) != 0;
+        printf("{\"time_ns\":%llu,\"pid\":%d,\"ppid\":%d,\"uid\":%d,\"comm\":\"%s\",\"path\":\"%s\",\"flags\":%d,\"read\":%s,\"write\":%s,\"create\":%s}\n",
+               nsecs, pid, $ppid, uid, comm, str(args->filename), args->flags,
+               $read ? "true" : "false",
+               $write ? "true" : "false",
+               $create ? "true" : "false");
+      }
+  register: ebpf_file_script_write
+
+- name: Write eBPF connect trace script
+  ansible.builtin.copy:
+    dest: /etc/open-creel/ebpf/connect.bt
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      tracepoint:sched:sched_process_exec
+      {
+        $ppid = curtask->real_parent->tgid;
+        $seed = comm == "openclaw" ||
+                str(args->filename) == "/usr/bin/openclaw" ||
+                str(args->filename) == "/usr/local/bin/openclaw" ||
+                str(args->filename) == "/opt/openclaw/bin/openclaw";
+        if ($seed || @tracked[$ppid]) {
+          @tracked[pid] = 1;
+        }
+      }
+
+      tracepoint:sched:sched_process_exit
+      /@tracked[pid]/
+      {
+        delete(@tracked[pid]);
+      }
+
+      tracepoint:syscalls:sys_enter_connect
+      /@tracked[pid] && args->addrlen >= 16/
+      {
+        $sa = (struct sockaddr *)args->uservaddr;
+        if ($sa->sa_family == 2) {
+          $ppid = curtask->real_parent->tgid;
+          $in = (struct sockaddr_in *)args->uservaddr;
+          $dst_port = (($in->sin_port & 0xff) << 8) | (($in->sin_port >> 8) & 0xff);
+          printf("{\"time_ns\":%llu,\"pid\":%d,\"ppid\":%d,\"uid\":%d,\"comm\":\"%s\",\"dst_ip\":\"%s\",\"dst_port\":%d}\n",
+                 nsecs, pid, $ppid, uid, comm, ntop($in->sin_addr.s_addr), $dst_port);
+        }
+      }
+  register: ebpf_connect_script_write
+
+- name: Install open-creel eBPF exec systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-ebpf-exec.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel eBPF sched_process_exec collector
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/bin/bpftrace -q /etc/open-creel/ebpf/exec.bt
+      Restart=always
+      RestartSec=3
+      StandardOutput=append:/var/lib/open-creel/data/bronze/ebpf/exec.log
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+  register: ebpf_exec_unit_write
+
+- name: Install open-creel eBPF file access systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-ebpf-fileaccess.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel eBPF openat collector
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/bin/bpftrace -q /etc/open-creel/ebpf/fileaccess.bt
+      Restart=always
+      RestartSec=3
+      StandardOutput=append:/var/lib/open-creel/data/bronze/ebpf/fileaccess.log
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+  register: ebpf_file_unit_write
+
+- name: Install open-creel eBPF connect systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-ebpf-connect.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel eBPF connect collector
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/bin/bpftrace -q /etc/open-creel/ebpf/connect.bt
+      Restart=always
+      RestartSec=3
+      StandardOutput=append:/var/lib/open-creel/data/bronze/ebpf/connect.log
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+  register: ebpf_connect_unit_write
+
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
@@ -102,11 +297,49 @@
     enabled: true
     state: started
 
+- name: Enable and start open-creel eBPF services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - open-creel-ebpf-exec.service
+    - open-creel-ebpf-fileaccess.service
+    - open-creel-ebpf-connect.service
+
 - name: Restart open-creel Zeek service when unit or script changes
   ansible.builtin.systemd:
     name: open-creel-zeek.service
     state: restarted
   when: zeek_script_write.changed or zeek_unit_write.changed
+
+- name: Restart open-creel eBPF services when unit or script changes
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - open-creel-ebpf-exec.service
+    - open-creel-ebpf-fileaccess.service
+    - open-creel-ebpf-connect.service
+  when: >
+    ebpf_exec_script_write.changed or
+    ebpf_file_script_write.changed or
+    ebpf_connect_script_write.changed or
+    ebpf_exec_unit_write.changed or
+    ebpf_file_unit_write.changed or
+    ebpf_connect_unit_write.changed
+
+- name: Verify open-creel eBPF services are active
+  ansible.builtin.command: systemctl is-active "{{ item }}"
+  register: ebpf_service_active
+  retries: 10
+  delay: 2
+  until: ebpf_service_active.stdout == "active"
+  changed_when: false
+  loop:
+    - open-creel-ebpf-exec.service
+    - open-creel-ebpf-fileaccess.service
+    - open-creel-ebpf-connect.service
 
 - name: Install DuckDB CLI if missing
   ansible.builtin.shell: |
@@ -135,14 +368,32 @@
   ansible.builtin.command: curl -fsS https://example.com
   changed_when: false
 
+- name: Generate one file read for eBPF file access logs
+  ansible.builtin.command: cat /etc/hosts
+  changed_when: false
+
 - name: Wait for conn.log in bronze
   ansible.builtin.wait_for:
     path: /var/lib/open-creel/data/bronze/zeek/conn.log
     timeout: 15
 
+- name: Wait for eBPF bronze logs
+  ansible.builtin.wait_for:
+    path: "{{ item }}"
+    timeout: 15
+  loop:
+    - /var/lib/open-creel/data/bronze/ebpf/exec.log
+    - /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
+    - /var/lib/open-creel/data/bronze/ebpf/connect.log
+
 - name: List bronze Zeek log directory
   ansible.builtin.command: ls -lah /var/lib/open-creel/data/bronze/zeek
   register: zeek_ls
+  changed_when: false
+
+- name: List bronze eBPF log directory
+  ansible.builtin.command: ls -lah /var/lib/open-creel/data/bronze/ebpf
+  register: ebpf_ls
   changed_when: false
 
 - name: Tail latest conn.log line
@@ -150,10 +401,32 @@
   register: zeek_tail
   changed_when: false
 
+- name: Tail latest eBPF exec line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/ebpf/exec.log
+  register: ebpf_exec_tail
+  changed_when: false
+
+- name: Tail latest eBPF fileaccess line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
+  register: ebpf_file_tail
+  changed_when: false
+
+- name: Tail latest eBPF connect line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/ebpf/connect.log
+  register: ebpf_connect_tail
+  changed_when: false
+
 - name: Print bronze log proof
   ansible.builtin.debug:
     msg:
       - "iface={{ creel_iface }}"
       - "{{ zeek_ls.stdout }}"
+      - "{{ ebpf_ls.stdout }}"
       - "last conn.log line:"
       - "{{ zeek_tail.stdout }}"
+      - "last exec.log line:"
+      - "{{ ebpf_exec_tail.stdout }}"
+      - "last fileaccess.log line:"
+      - "{{ ebpf_file_tail.stdout }}"
+      - "last connect.log line:"
+      - "{{ ebpf_connect_tail.stdout }}"

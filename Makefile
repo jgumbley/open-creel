@@ -4,10 +4,10 @@
 help:
 	@echo "Targets:"
 	@echo "  make infra           Run core system setup and install Zeek (sudo/become prompts)"
-	@echo "  make bronze          Show bronze Zeek logs"
-	@echo "  make silver          Run stub spawner to map conn.log -> OCSF silver"
+	@echo "  make bronze          Show bronze Zeek + eBPF logs"
+	@echo "  make silver          Run stub spawner to map bronze Zeek/eBPF -> OCSF silver"
 	@echo "  make silver-proof    Show latest mapped OCSF silver record"
-	@echo "  make gold            Run stub spawner with one gold DNS detection rule"
+	@echo "  make gold            Run stub spawner with gold detection rules"
 	@echo "  make gold-proof      Show latest mapped OCSF gold detection record"
 	@echo "  make clean-silver    Remove generated silver output"
 	@echo "  make clean-gold      Remove generated gold output"
@@ -19,6 +19,10 @@ UV_CACHE_DIR ?= $(CURDIR)/.uv-cache
 export UV_CACHE_DIR
 PYTHON ?= uv run --python .venv/bin/python
 BRONZE_CONN_URI ?= /var/lib/open-creel/data/bronze/zeek/conn.log
+BRONZE_DNS_URI ?= /var/lib/open-creel/data/bronze/zeek/dns.log
+BRONZE_EBPF_EXEC_URI ?= /var/lib/open-creel/data/bronze/ebpf/exec.log
+BRONZE_EBPF_FILEACCESS_URI ?= /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
+BRONZE_EBPF_CONNECT_URI ?= /var/lib/open-creel/data/bronze/ebpf/connect.log
 SILVER_ROOT_URI ?= /tmp/open-creel/data/silver/ocsf
 GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
 PART_NAME ?= part-00000.jsonl
@@ -30,21 +34,42 @@ infra:
 
 bronze:
 	ls -lah /var/lib/open-creel/data/bronze/zeek
-	tail -n 1 /var/lib/open-creel/data/bronze/zeek/conn.log
+	tail -n 1 "$(BRONZE_CONN_URI)"
+	tail -n 1 "$(BRONZE_DNS_URI)"
+	ls -lah /var/lib/open-creel/data/bronze/ebpf
+	tail -n 1 "$(BRONZE_EBPF_EXEC_URI)"
+	tail -n 1 "$(BRONZE_EBPF_FILEACCESS_URI)"
+	tail -n 1 "$(BRONZE_EBPF_CONNECT_URI)"
 
 silver: .venv/
-	$(PYTHON) stub_spawner.py --bronze-uri "$(BRONZE_CONN_URI)" --silver-uri "$(SILVER_ROOT_URI)" --part-name "$(PART_NAME)"
+	$(PYTHON) stub_spawner.py --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --part-name "$(PART_NAME)"
 
 silver-proof:
-	ls -lah "$(SILVER_ROOT_URI)"/class_uid=4001
 	@set -eu; \
-	file="$$(find "$(SILVER_ROOT_URI)/class_uid=4001" -type f -name '*.jsonl' | sort | tail -n 1)"; \
-	echo "silver_file=$$file"; \
-	echo "silver_rows=$$(wc -l < "$$file")"; \
-	tail -n 1 "$$file"
+	for class_uid in 4001 1007 1001; do \
+		class_dir="$(SILVER_ROOT_URI)/class_uid=$$class_uid"; \
+		echo "class_uid=$$class_uid"; \
+		if [ ! -d "$$class_dir" ]; then \
+			echo "silver_rows=0"; \
+			echo "silver_file=(none)"; \
+			echo "no silver records present"; \
+			continue; \
+		fi; \
+		ls -lah "$$class_dir"; \
+		file="$$(find "$$class_dir" -type f -name '*.jsonl' | sort | tail -n 1)"; \
+		if [ -z "$$file" ]; then \
+			echo "silver_rows=0"; \
+			echo "silver_file=(none)"; \
+			echo "no silver records present"; \
+			continue; \
+		fi; \
+		echo "silver_file=$$file"; \
+		echo "silver_rows=$$(wc -l < "$$file")"; \
+		tail -n 1 "$$file"; \
+	done
 
 gold: .venv/
-	$(PYTHON) stub_spawner.py --bronze-uri "$(BRONZE_CONN_URI)" --silver-uri "$(SILVER_ROOT_URI)" --gold-uri "$(GOLD_ROOT_URI)" --part-name "$(PART_NAME)"
+	$(PYTHON) stub_spawner.py --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --gold-uri "$(GOLD_ROOT_URI)" --part-name "$(PART_NAME)"
 
 gold-proof:
 	@set -eu; \
