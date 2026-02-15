@@ -47,9 +47,22 @@ gold: .venv/
 	$(PYTHON) stub_spawner.py --bronze-uri "$(BRONZE_CONN_URI)" --silver-uri "$(SILVER_ROOT_URI)" --gold-uri "$(GOLD_ROOT_URI)" --part-name "$(PART_NAME)"
 
 gold-proof:
-	ls -lah "$(GOLD_ROOT_URI)"/class_uid=2004
 	@set -eu; \
-	file="$$(find "$(GOLD_ROOT_URI)/class_uid=2004" -type f -name '*.jsonl' | sort | tail -n 1)"; \
+	class_dir="$(GOLD_ROOT_URI)/class_uid=2004"; \
+	if [ ! -d "$$class_dir" ]; then \
+		echo "gold_rows=0"; \
+		echo "gold_file=(none)"; \
+		echo "no gold detections present"; \
+		exit 0; \
+	fi; \
+	ls -lah "$$class_dir"; \
+	file="$$(find "$$class_dir" -type f -name '*.jsonl' | sort | tail -n 1)"; \
+	if [ -z "$$file" ]; then \
+		echo "gold_rows=0"; \
+		echo "gold_file=(none)"; \
+		echo "no gold detections present"; \
+		exit 0; \
+	fi; \
 	echo "gold_file=$$file"; \
 	echo "gold_rows=$$(wc -l < "$$file")"; \
 	tail -n 1 "$$file"
