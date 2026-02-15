@@ -4,6 +4,7 @@
 help:
 	@echo "Targets:"
 	@echo "  make infra           Run core system setup and install Zeek (sudo/become prompts)"
+	@echo "  make restart-openclaw-journal  Restart OpenClaw journal collector service (sudo prompt)"
 	@echo "  make lint            Run Ruff lint checks"
 	@echo "  make typecheck       Run Ty static type checks"
 	@echo "  make test            Run Python unit tests"
@@ -47,10 +48,13 @@ GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
 PART_NAME ?= part-00000.parquet
 DOMAIN ?=
 
-.PHONY: infra lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
+.PHONY: infra restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 infra:
 	ansible-playbook creel.yml -c local -K
+
+restart-openclaw-journal:
+	sudo systemctl restart open-creel-openclaw-journal.service
 
 bronze:
 	ls -lah /var/lib/open-creel/data/bronze/zeek
