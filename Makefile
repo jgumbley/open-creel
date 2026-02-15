@@ -7,16 +7,19 @@ help:
 	@echo "  make bronze          Show bronze Zeek logs"
 	@echo "  make silver          Run stub spawner to map conn.log -> OCSF silver"
 	@echo "  make silver-proof    Show latest mapped OCSF silver record"
+	@echo "  make clean-silver    Remove generated silver output"
 
 include common.mk
 
 HOSTNAME := $(shell hostname)
+UV_CACHE_DIR ?= $(CURDIR)/.uv-cache
+export UV_CACHE_DIR
 PYTHON ?= uv run --python .venv/bin/python
 BRONZE_CONN_URI ?= /var/lib/open-creel/data/bronze/zeek/conn.log
 SILVER_ROOT_URI ?= /tmp/open-creel/data/silver/ocsf
 PART_NAME ?= part-00000.jsonl
 
-.PHONY: infra bronze silver silver-proof
+.PHONY: infra bronze silver silver-proof clean-silver
 
 infra:
 	ansible-playbook creel.yml -c local -K
@@ -30,4 +33,11 @@ silver: .venv/
 
 silver-proof:
 	ls -lah "$(SILVER_ROOT_URI)"/class_uid=4001
-	tail -n 1 "$$(find "$(SILVER_ROOT_URI)/class_uid=4001" -type f -name '*.jsonl' | sort | tail -n 1)"
+	@set -eu; \
+	file="$$(find "$(SILVER_ROOT_URI)/class_uid=4001" -type f -name '*.jsonl' | sort | tail -n 1)"; \
+	echo "silver_file=$$file"; \
+	echo "silver_rows=$$(wc -l < "$$file")"; \
+	tail -n 1 "$$file"
+
+clean-silver:
+	rm -rf "$(SILVER_ROOT_URI)"

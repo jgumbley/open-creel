@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
+import shutil
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -67,7 +70,7 @@ def direction_id(local_orig: Any, local_resp: Any) -> int:
     return 0
 
 
-def map_conn_event(record: dict[str, Any], raw_line: str, bronze_uri: str) -> tuple[str, dict[str, Any]]:
+def map_conn_event(record: dict[str, Any], raw_line: str, bronze_uri: str) -> tuple[str, float, dict[str, Any]]:
     ts = as_float(record.get("ts"))
     if ts is None:
         raise ValueError("required Zeek field 'ts' is missing or invalid")
@@ -160,15 +163,103 @@ def map_conn_event(record: dict[str, Any], raw_line: str, bronze_uri: str) -> tu
         event["unmapped"] = unmapped
 
     partition_date = datetime.fromtimestamp(time_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-    return partition_date, event
+    return partition_date, ts, event
+
+
+def load_dns_index(bronze_path: Path) -> dict[tuple[str, str], list[tuple[float, float, str]]]:
+    dns_path = bronze_path.with_name("dns.log")
+    if not dns_path.exists():
+        raise FileNotFoundError(f"dns input does not exist: {dns_path}")
+
+    index: dict[tuple[str, str], list[tuple[float, float, str]]] = defaultdict(list)
+    with dns_path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            if not raw_line.strip():
+                continue
+            try:
+                record = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{dns_path}:{line_number}: invalid JSON ({exc.msg})") from exc
+
+            if not isinstance(record, dict):
+                raise ValueError(f"{dns_path}:{line_number}: expected JSON object")
+
+            ts = as_float(record.get("ts"))
+            if ts is None:
+                raise ValueError(f"{dns_path}:{line_number}: required field 'ts' is missing or invalid")
+
+            query = record.get("query")
+            if not isinstance(query, str) or not query:
+                continue
+
+            orig_host = record.get("id.orig_h")
+            if not isinstance(orig_host, str) or not orig_host:
+                continue
+
+            answers = record.get("answers")
+            if not isinstance(answers, list) or not answers:
+                continue
+
+            ttls = record.get("TTLs")
+            ttl_values: list[float | None] = []
+            if isinstance(ttls, list):
+                for ttl in ttls:
+                    ttl_values.append(as_float(ttl))
+
+            for idx, answer in enumerate(answers):
+                if not isinstance(answer, str) or not answer:
+                    continue
+                try:
+                    resolved_ip = str(ipaddress.ip_address(answer))
+                except ValueError:
+                    continue
+
+                ttl = ttl_values[idx] if idx < len(ttl_values) else None
+                expires_at = ts + max(0.0, ttl if ttl is not None else 0.0)
+                index[(orig_host, resolved_ip)].append((ts, expires_at, query))
+
+    for values in index.values():
+        values.sort(key=lambda item: item[0])
+    return index
+
+
+def resolve_hostname(
+    dns_index: dict[tuple[str, str], list[tuple[float, float, str]]],
+    src_ip: Any,
+    dst_ip: Any,
+    conn_ts: float,
+) -> str | None:
+    if not isinstance(src_ip, str) or not src_ip:
+        return None
+    if not isinstance(dst_ip, str) or not dst_ip:
+        return None
+
+    candidates = dns_index.get((src_ip, dst_ip))
+    if not candidates:
+        return None
+
+    for dns_ts, expires_at, query in reversed(candidates):
+        if dns_ts > conn_ts:
+            continue
+        if conn_ts <= expires_at:
+            return query
+    return None
 
 
 def run(bronze_uri: str, silver_uri: str, part_name: str) -> int:
     bronze_path = resolve_uri(bronze_uri)
     silver_root = resolve_uri(silver_uri)
+    class_root = silver_root / f"class_uid={CLASS_UID}"
 
     if not bronze_path.exists():
         raise FileNotFoundError(f"bronze input does not exist: {bronze_path}")
+
+    dns_index = load_dns_index(bronze_path)
+
+    # Idempotent run semantics: rebuild this class partition from bronze each run.
+    if class_root.exists():
+        shutil.rmtree(class_root)
+    class_root.mkdir(parents=True, exist_ok=True)
 
     outputs: dict[Path, Any] = {}
     processed = 0
@@ -186,11 +277,21 @@ def run(bronze_uri: str, silver_uri: str, part_name: str) -> int:
                 if not isinstance(record, dict):
                     raise ValueError(f"{bronze_path}:{line_number}: expected JSON object")
 
-                partition_date, event = map_conn_event(record, raw_line, bronze_uri)
-                out_path = silver_root / f"class_uid={CLASS_UID}" / f"date={partition_date}" / part_name
+                partition_date, conn_ts, event = map_conn_event(record, raw_line, bronze_uri)
+
+                resolved_name = resolve_hostname(
+                    dns_index=dns_index,
+                    src_ip=record.get("id.orig_h"),
+                    dst_ip=record.get("id.resp_h"),
+                    conn_ts=conn_ts,
+                )
+                if resolved_name and "dst_endpoint" in event:
+                    event["dst_endpoint"]["hostname"] = resolved_name
+
+                out_path = class_root / f"date={partition_date}" / part_name
                 if out_path not in outputs:
                     out_path.parent.mkdir(parents=True, exist_ok=True)
-                    outputs[out_path] = out_path.open("a", encoding="utf-8")
+                    outputs[out_path] = out_path.open("w", encoding="utf-8")
                 outputs[out_path].write(json.dumps(event, separators=(",", ":"), sort_keys=True))
                 outputs[out_path].write("\n")
                 processed += 1
