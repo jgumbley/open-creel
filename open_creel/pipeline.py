@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import re
 import shlex
 import shutil
 from collections import defaultdict
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -225,11 +225,6 @@ SENSITIVE_PATH_FRAGMENTS = (
     "/sessions",
 )
 
-INVALID_JSON_ESCAPE_RE = re.compile(r'\\(?!["\\/bfnrtu])')
-BOOT_TIME_SECONDS_CACHE: float | None = None
-BOOT_TIME_SECONDS_INITIALIZED = False
-
-
 def resolve_uri(uri: str) -> Path:
     if uri.startswith("dbfs:/"):
         return Path("/dbfs") / uri[len("dbfs:/") :].lstrip("/")
@@ -316,24 +311,20 @@ def normalize_process_name(comm: str | None, binary: str | None, argv: list[str]
     return None
 
 
-def record_time_seconds(record: dict[str, Any]) -> float | None:
+def record_time_seconds(record: dict[str, Any], source_path: Path, line_number: int) -> float:
     for field, scale in TIME_FIELD_SCALES:
         if field not in record:
             continue
         raw = as_float(record.get(field))
         if raw is None:
-            continue
+            raise ValueError(f"{source_path}:{line_number}: time field '{field}' is missing or invalid")
         return normalize_epoch_seconds(raw * scale)
-    return None
+    expected_fields = ", ".join(field for field, _ in TIME_FIELD_SCALES)
+    raise ValueError(f"{source_path}:{line_number}: required time field is missing ({expected_fields})")
 
 
+@lru_cache(maxsize=1)
 def read_boot_time_seconds() -> float | None:
-    global BOOT_TIME_SECONDS_CACHE
-    global BOOT_TIME_SECONDS_INITIALIZED
-    if BOOT_TIME_SECONDS_INITIALIZED:
-        return BOOT_TIME_SECONDS_CACHE
-
-    BOOT_TIME_SECONDS_INITIALIZED = True
     stat_path = Path("/proc/stat")
     try:
         with stat_path.open("r", encoding="utf-8") as handle:
@@ -344,7 +335,6 @@ def read_boot_time_seconds() -> float | None:
                 if len(parts) != 2:
                     break
                 boot_time = as_float(parts[1])
-                BOOT_TIME_SECONDS_CACHE = boot_time
                 return boot_time
     except OSError:
         return None
@@ -376,11 +366,7 @@ def read_json_lines(path: Path) -> list[tuple[int, str, dict[str, Any]]]:
             try:
                 record = json.loads(raw_line)
             except json.JSONDecodeError as exc:
-                normalized_raw = INVALID_JSON_ESCAPE_RE.sub(r"\\\\", raw_line)
-                try:
-                    record = json.loads(normalized_raw)
-                except json.JSONDecodeError as normalized_exc:
-                    raise ValueError(f"{path}:{line_number}: invalid JSON ({normalized_exc.msg})") from normalized_exc
+                raise ValueError(f"{path}:{line_number}: invalid JSON ({exc.msg})") from exc
             if not isinstance(record, dict):
                 raise ValueError(f"{path}:{line_number}: expected JSON object")
             rows.append((line_number, raw_line, record))
@@ -424,9 +410,7 @@ def load_dns_index(
     latest_dns_ts: float | None = None
 
     for line_number, _, record in read_json_lines(dns_path):
-        ts = record_time_seconds(record)
-        if ts is None:
-            raise ValueError(f"{dns_path}:{line_number}: required time field is missing or invalid")
+        ts = record_time_seconds(record, dns_path, line_number)
         if latest_dns_ts is None or ts > latest_dns_ts:
             latest_dns_ts = ts
 
@@ -576,9 +560,7 @@ def parse_exec_observation(
     raw_line: str,
     exec_path: Path,
 ) -> dict[str, Any]:
-    ts = record_time_seconds(record)
-    if ts is None:
-        raise ValueError(f"{exec_path}:{line_number}: required time field is missing or invalid")
+    ts = record_time_seconds(record, exec_path, line_number)
 
     pid = first_int(record, ["pid", "tgid"])
     if pid is None:
@@ -717,9 +699,7 @@ def parse_file_observation(
     fileaccess_path: Path,
     process_catalog: dict[int, dict[str, Any]],
 ) -> dict[str, Any] | None:
-    ts = record_time_seconds(record)
-    if ts is None:
-        raise ValueError(f"{fileaccess_path}:{line_number}: required time field is missing or invalid")
+    ts = record_time_seconds(record, fileaccess_path, line_number)
 
     pid = first_int(record, ["pid", "tgid"])
     if pid is None:
@@ -845,9 +825,7 @@ def parse_connect_observation(
     connect_path: Path,
     process_catalog: dict[int, dict[str, Any]],
 ) -> dict[str, Any] | None:
-    ts = record_time_seconds(record)
-    if ts is None:
-        raise ValueError(f"{connect_path}:{line_number}: required time field is missing or invalid")
+    ts = record_time_seconds(record, connect_path, line_number)
 
     pid = first_int(record, ["pid", "tgid"])
     if pid is None:
@@ -1285,9 +1263,10 @@ def write_parquet_records(out_path: Path, records: list[dict[str, Any]]) -> int:
             for record in records
         ]
         conn.executemany("INSERT INTO events_json VALUES (?)", rows)
-        schema_json = conn.execute(
+        schema_row = conn.execute(
             "SELECT json_group_structure(raw_json::JSON) FROM events_json"
-        ).fetchone()[0]
+        ).fetchone()
+        schema_json = schema_row[0] if schema_row is not None else None
         if not isinstance(schema_json, str) or not schema_json:
             raise ValueError(f"failed to infer json schema for parquet output: {out_path}")
         schema_sql = schema_json.replace("'", "''")

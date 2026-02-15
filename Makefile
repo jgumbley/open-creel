@@ -4,6 +4,9 @@
 help:
 	@echo "Targets:"
 	@echo "  make infra           Run core system setup and install Zeek (sudo/become prompts)"
+	@echo "  make lint            Run Ruff lint checks"
+	@echo "  make typecheck       Run Ty static type checks"
+	@echo "  make test            Run Python unit tests"
 	@echo "  make bronze          Show bronze Zeek + eBPF logs"
 	@echo "  make silver          Map bronze Zeek/eBPF -> OCSF silver"
 	@echo "  make silver-show-latest  Show latest mapped OCSF silver record (alias: silver-proof)"
@@ -34,7 +37,7 @@ GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
 PART_NAME ?= part-00000.parquet
 DOMAIN ?=
 
-.PHONY: infra bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
+.PHONY: infra lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 infra:
 	ansible-playbook creel.yml -c local -K

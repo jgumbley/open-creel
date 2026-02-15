@@ -1,4 +1,4 @@
-.PHONY: digest ingest clean
+.PHONY: digest ingest lint typecheck test clean
 
 define success
 	@printf '\033[32m\n'; \
@@ -28,6 +28,18 @@ digest:
 
 ingest:
 	$(MAKE) digest | wl-copy
+	$(call success)
+
+lint: .venv/
+	$(PYTHON) -m ruff check open_creel tests
+	$(call success)
+
+typecheck: .venv/
+	$(PYTHON) -m ty check open_creel tests
+	$(call success)
+
+test: lint typecheck
+	$(PYTHON) -m pytest -q
 	$(call success)
 
 clean::
