@@ -26,6 +26,7 @@
     - /var/lib/open-creel/data
     - /var/lib/open-creel/data/bronze/zeek
     - /var/lib/open-creel/data/bronze/ebpf
+    - /var/lib/open-creel/data/bronze/openclaw
     - /var/lib/open-creel/data/silver
     - /var/lib/open-creel/data/gold
     - /etc/open-creel/zeek

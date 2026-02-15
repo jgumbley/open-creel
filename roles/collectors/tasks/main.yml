@@ -8,6 +8,46 @@
 - name: Include eBPF collector tasks
   ansible.builtin.import_tasks: ebpf.yml
 
+- name: Ensure OpenClaw bronze logs exist without truncation
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /var/lib/open-creel/data/bronze/openclaw/runtime.log
+    - /var/lib/open-creel/data/bronze/openclaw/audit.log
+    - /var/lib/open-creel/data/bronze/openclaw/messages.log
+    - /var/lib/open-creel/data/bronze/openclaw/tool_calls.log
+    - /var/lib/open-creel/data/bronze/openclaw/approvals.log
+    - /var/lib/open-creel/data/bronze/openclaw/skills.log
+    - /var/lib/open-creel/data/bronze/openclaw/auth.log
+
+- name: Write OpenClaw journal collector unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-openclaw-journal.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel OpenClaw journal collector
+      After=network-online.target systemd-journald.service
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/bin/bash -lc 'set -euo pipefail; shopt -s nullglob globstar; runtime_files=(/home/system/.openclaw/agents/main/sessions/*.jsonl /home/system/.openclaw/cron/runs/*.jsonl); if [ "$${runtime_files[*]-}" != "" ]; then tail -n 0 -F -q "$${runtime_files[@]}" >> /var/lib/open-creel/data/bronze/openclaw/runtime.log & fi; audit_files=(/home/system/.openclaw/audit/*.jsonl /home/system/.openclaw/audit/**/*.jsonl); if [ "$${audit_files[*]-}" != "" ]; then tail -n 0 -F -q "$${audit_files[@]}" >> /var/lib/open-creel/data/bronze/openclaw/audit.log & fi; message_files=(/home/system/.openclaw/audit/message*.jsonl /home/system/.openclaw/audit/messages/*.jsonl); if [ "$${message_files[*]-}" != "" ]; then tail -n 0 -F -q "$${message_files[@]}" >> /var/lib/open-creel/data/bronze/openclaw/messages.log & fi; tool_call_files=(/home/system/.openclaw/audit/tool*.jsonl /home/system/.openclaw/audit/tools/*.jsonl /home/system/.openclaw/audit/tool_calls/*.jsonl); if [ "$${tool_call_files[*]-}" != "" ]; then tail -n 0 -F -q "$${tool_call_files[@]}" >> /var/lib/open-creel/data/bronze/openclaw/tool_calls.log & fi; approval_files=(/home/system/.openclaw/audit/approval*.jsonl /home/system/.openclaw/audit/approvals/*.jsonl); if [ "$${approval_files[*]-}" != "" ]; then tail -n 0 -F -q "$${approval_files[@]}" >> /var/lib/open-creel/data/bronze/openclaw/approvals.log & fi; skill_files=(/home/system/.openclaw/audit/skill*.jsonl /home/system/.openclaw/audit/skills/*.jsonl); if [ "$${skill_files[*]-}" != "" ]; then tail -n 0 -F -q "$${skill_files[@]}" >> /var/lib/open-creel/data/bronze/openclaw/skills.log & fi; auth_files=(/home/system/.openclaw/audit/auth*.jsonl /home/system/.openclaw/audit/auth/*.jsonl /home/system/.openclaw/audit/pair*.jsonl /home/system/.openclaw/audit/pairing/*.jsonl /home/system/.openclaw/audit/token*.jsonl /home/system/.openclaw/audit/tokens/*.jsonl); if [ "$${auth_files[*]-}" != "" ]; then tail -n 0 -F -q "$${auth_files[@]}" >> /var/lib/open-creel/data/bronze/openclaw/auth.log & fi; exec journalctl -f -n 0 -o json --output-fields=__REALTIME_TIMESTAMP,_HOSTNAME,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,PRIORITY,MESSAGE -u openclaw.service -u openclaw-gateway.service -u openclaw-worker.service -u openclaw-spawner.service'
+      Restart=always
+      RestartSec=3
+      StandardOutput=append:/var/lib/open-creel/data/bronze/openclaw/runtime.log
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+  register: openclaw_journal_unit_write
+
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
@@ -27,6 +67,12 @@
     - open-creel-ebpf-exec.service
     - open-creel-ebpf-fileaccess.service
     - open-creel-ebpf-connect.service
+
+- name: Enable and start open-creel OpenClaw journal service
+  ansible.builtin.systemd:
+    name: open-creel-openclaw-journal.service
+    enabled: true
+    state: started
 
 - name: Restart open-creel Zeek service when unit or script changes
   ansible.builtin.systemd:
@@ -50,6 +96,12 @@
     ebpf_file_unit_write.changed or
     ebpf_connect_unit_write.changed
 
+- name: Restart open-creel OpenClaw journal service when unit changes
+  ansible.builtin.systemd:
+    name: open-creel-openclaw-journal.service
+    state: restarted
+  when: openclaw_journal_unit_write.changed
+
 - name: Verify open-creel eBPF services are active
   ansible.builtin.command: systemctl is-active "{{ item }}"
   register: ebpf_service_active
@@ -61,6 +113,14 @@
     - open-creel-ebpf-exec.service
     - open-creel-ebpf-fileaccess.service
     - open-creel-ebpf-connect.service
+
+- name: Verify open-creel OpenClaw journal service is active
+  ansible.builtin.command: systemctl is-active open-creel-openclaw-journal.service
+  register: openclaw_journal_service_active
+  retries: 10
+  delay: 2
+  until: openclaw_journal_service_active.stdout == "active"
+  changed_when: false
 
 - name: Include collector proof tasks
   ansible.builtin.import_tasks: proof.yml

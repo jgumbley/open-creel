@@ -24,9 +24,28 @@
     group: root
     mode: "0644"
     content: |
+      @load base/protocols/conn
+      @load base/protocols/dns
+      @load base/protocols/http
+      @load base/protocols/ssl
+      @load base/frameworks/notice
       @load policy/tuning/json-logs.zeek
       redef Log::default_logdir = "/var/lib/open-creel/data/bronze/zeek";
   register: zeek_script_write
+
+- name: Ensure Zeek bronze logs exist without truncation
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /var/lib/open-creel/data/bronze/zeek/conn.log
+    - /var/lib/open-creel/data/bronze/zeek/dns.log
+    - /var/lib/open-creel/data/bronze/zeek/http.log
+    - /var/lib/open-creel/data/bronze/zeek/ssl.log
+    - /var/lib/open-creel/data/bronze/zeek/notice.log
 
 - name: Pick capture interface from default route
   ansible.builtin.shell: |

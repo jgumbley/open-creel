@@ -7,7 +7,7 @@ help:
 	@echo "  make lint            Run Ruff lint checks"
 	@echo "  make typecheck       Run Ty static type checks"
 	@echo "  make test            Run Python unit tests"
-	@echo "  make bronze          Show bronze Zeek + eBPF logs"
+	@echo "  make bronze          Show bronze Zeek + eBPF + OpenClaw logs"
 	@echo "  make silver          Map bronze Zeek/eBPF -> OCSF silver"
 	@echo "  make silver-show-latest  Show latest mapped OCSF silver record (alias: silver-proof)"
 	@echo "  make silver-network-summary  Summarize OCSF silver network activity records"
@@ -29,9 +29,19 @@ export UV_CACHE_DIR
 PYTHON ?= uv run --python .venv/bin/python
 BRONZE_CONN_URI ?= /var/lib/open-creel/data/bronze/zeek/conn.log
 BRONZE_DNS_URI ?= /var/lib/open-creel/data/bronze/zeek/dns.log
+BRONZE_HTTP_URI ?= /var/lib/open-creel/data/bronze/zeek/http.log
+BRONZE_SSL_URI ?= /var/lib/open-creel/data/bronze/zeek/ssl.log
+BRONZE_NOTICE_URI ?= /var/lib/open-creel/data/bronze/zeek/notice.log
 BRONZE_EBPF_EXEC_URI ?= /var/lib/open-creel/data/bronze/ebpf/exec.log
 BRONZE_EBPF_FILEACCESS_URI ?= /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
 BRONZE_EBPF_CONNECT_URI ?= /var/lib/open-creel/data/bronze/ebpf/connect.log
+BRONZE_OPENCLAW_RUNTIME_URI ?= /var/lib/open-creel/data/bronze/openclaw/runtime.log
+BRONZE_OPENCLAW_AUDIT_URI ?= /var/lib/open-creel/data/bronze/openclaw/audit.log
+BRONZE_OPENCLAW_MESSAGES_URI ?= /var/lib/open-creel/data/bronze/openclaw/messages.log
+BRONZE_OPENCLAW_TOOL_CALLS_URI ?= /var/lib/open-creel/data/bronze/openclaw/tool_calls.log
+BRONZE_OPENCLAW_APPROVALS_URI ?= /var/lib/open-creel/data/bronze/openclaw/approvals.log
+BRONZE_OPENCLAW_SKILLS_URI ?= /var/lib/open-creel/data/bronze/openclaw/skills.log
+BRONZE_OPENCLAW_AUTH_URI ?= /var/lib/open-creel/data/bronze/openclaw/auth.log
 SILVER_ROOT_URI ?= /tmp/open-creel/data/silver/ocsf
 GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
 PART_NAME ?= part-00000.parquet
@@ -46,13 +56,24 @@ bronze:
 	ls -lah /var/lib/open-creel/data/bronze/zeek
 	tail -n 1 "$(BRONZE_CONN_URI)"
 	tail -n 1 "$(BRONZE_DNS_URI)"
+	tail -n 1 "$(BRONZE_HTTP_URI)"
+	tail -n 1 "$(BRONZE_SSL_URI)"
+	tail -n 1 "$(BRONZE_NOTICE_URI)"
 	ls -lah /var/lib/open-creel/data/bronze/ebpf
 	tail -n 1 "$(BRONZE_EBPF_EXEC_URI)"
 	tail -n 1 "$(BRONZE_EBPF_FILEACCESS_URI)"
 	tail -n 1 "$(BRONZE_EBPF_CONNECT_URI)"
+	ls -lah /var/lib/open-creel/data/bronze/openclaw
+	tail -n 1 "$(BRONZE_OPENCLAW_RUNTIME_URI)"
+	tail -n 1 "$(BRONZE_OPENCLAW_AUDIT_URI)"
+	tail -n 1 "$(BRONZE_OPENCLAW_MESSAGES_URI)"
+	tail -n 1 "$(BRONZE_OPENCLAW_TOOL_CALLS_URI)"
+	tail -n 1 "$(BRONZE_OPENCLAW_APPROVALS_URI)"
+	tail -n 1 "$(BRONZE_OPENCLAW_SKILLS_URI)"
+	tail -n 1 "$(BRONZE_OPENCLAW_AUTH_URI)"
 
 silver: .venv/
-	$(PYTHON) -m open_creel.cli silver --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --part-name "$(PART_NAME)"
+	$(PYTHON) -m open_creel.cli silver --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-http-uri "$(BRONZE_HTTP_URI)" --bronze-ssl-uri "$(BRONZE_SSL_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --part-name "$(PART_NAME)"
 
 silver-show-latest: .venv/
 	$(PYTHON) -m open_creel.cli silver-show-latest --silver-uri "$(SILVER_ROOT_URI)"
@@ -71,7 +92,7 @@ silver-domain-check: .venv/
 	$(PYTHON) -m open_creel.cli silver-domain-check --silver-uri "$(SILVER_ROOT_URI)" --domain "$(DOMAIN)"
 
 gold: .venv/
-	$(PYTHON) -m open_creel.cli gold --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --gold-uri "$(GOLD_ROOT_URI)" --part-name "$(PART_NAME)"
+	$(PYTHON) -m open_creel.cli gold --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-http-uri "$(BRONZE_HTTP_URI)" --bronze-ssl-uri "$(BRONZE_SSL_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --gold-uri "$(GOLD_ROOT_URI)" --part-name "$(PART_NAME)"
 
 gold-show-latest: .venv/
 	$(PYTHON) -m open_creel.cli gold-show-latest --gold-uri "$(GOLD_ROOT_URI)"

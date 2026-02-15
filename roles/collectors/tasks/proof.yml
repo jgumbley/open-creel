@@ -1,5 +1,9 @@
 ---
-- name: Generate one outbound request for Zeek logs
+- name: Generate one plaintext outbound request for Zeek HTTP logs
+  ansible.builtin.command: curl -fsS http://example.com
+  changed_when: false
+
+- name: Generate one TLS outbound request for Zeek SSL logs
   ansible.builtin.command: curl -fsS https://example.com
   changed_when: false
 
@@ -7,10 +11,16 @@
   ansible.builtin.command: cat /etc/hosts
   changed_when: false
 
-- name: Wait for conn.log in bronze
+- name: Wait for Zeek bronze logs
   ansible.builtin.wait_for:
-    path: /var/lib/open-creel/data/bronze/zeek/conn.log
+    path: "{{ item }}"
     timeout: 15
+  loop:
+    - /var/lib/open-creel/data/bronze/zeek/conn.log
+    - /var/lib/open-creel/data/bronze/zeek/dns.log
+    - /var/lib/open-creel/data/bronze/zeek/http.log
+    - /var/lib/open-creel/data/bronze/zeek/ssl.log
+    - /var/lib/open-creel/data/bronze/zeek/notice.log
 
 - name: Wait for eBPF bronze logs
   ansible.builtin.wait_for:
@@ -20,6 +30,19 @@
     - /var/lib/open-creel/data/bronze/ebpf/exec.log
     - /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
     - /var/lib/open-creel/data/bronze/ebpf/connect.log
+
+- name: Wait for OpenClaw bronze logs
+  ansible.builtin.wait_for:
+    path: "{{ item }}"
+    timeout: 15
+  loop:
+    - /var/lib/open-creel/data/bronze/openclaw/runtime.log
+    - /var/lib/open-creel/data/bronze/openclaw/audit.log
+    - /var/lib/open-creel/data/bronze/openclaw/messages.log
+    - /var/lib/open-creel/data/bronze/openclaw/tool_calls.log
+    - /var/lib/open-creel/data/bronze/openclaw/approvals.log
+    - /var/lib/open-creel/data/bronze/openclaw/skills.log
+    - /var/lib/open-creel/data/bronze/openclaw/auth.log
 
 - name: List bronze Zeek log directory
   ansible.builtin.command: ls -lah /var/lib/open-creel/data/bronze/zeek
@@ -31,9 +54,34 @@
   register: ebpf_ls
   changed_when: false
 
+- name: List bronze OpenClaw log directory
+  ansible.builtin.command: ls -lah /var/lib/open-creel/data/bronze/openclaw
+  register: openclaw_ls
+  changed_when: false
+
 - name: Tail latest conn.log line
   ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/zeek/conn.log
   register: zeek_tail
+  changed_when: false
+
+- name: Tail latest dns.log line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/zeek/dns.log
+  register: zeek_dns_tail
+  changed_when: false
+
+- name: Tail latest http.log line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/zeek/http.log
+  register: zeek_http_tail
+  changed_when: false
+
+- name: Tail latest ssl.log line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/zeek/ssl.log
+  register: zeek_ssl_tail
+  changed_when: false
+
+- name: Tail latest notice.log line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/zeek/notice.log
+  register: zeek_notice_tail
   changed_when: false
 
 - name: Tail latest eBPF exec line
@@ -51,17 +99,75 @@
   register: ebpf_connect_tail
   changed_when: false
 
+- name: Tail latest OpenClaw runtime line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/openclaw/runtime.log
+  register: openclaw_runtime_tail
+  changed_when: false
+
+- name: Tail latest OpenClaw audit line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/openclaw/audit.log
+  register: openclaw_audit_tail
+  changed_when: false
+
+- name: Tail latest OpenClaw messages line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/openclaw/messages.log
+  register: openclaw_messages_tail
+  changed_when: false
+
+- name: Tail latest OpenClaw tool call line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/openclaw/tool_calls.log
+  register: openclaw_tool_calls_tail
+  changed_when: false
+
+- name: Tail latest OpenClaw approvals line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/openclaw/approvals.log
+  register: openclaw_approvals_tail
+  changed_when: false
+
+- name: Tail latest OpenClaw skills line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/openclaw/skills.log
+  register: openclaw_skills_tail
+  changed_when: false
+
+- name: Tail latest OpenClaw auth line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/openclaw/auth.log
+  register: openclaw_auth_tail
+  changed_when: false
+
 - name: Print bronze log proof
   ansible.builtin.debug:
     msg:
       - "iface={{ creel_iface }}"
       - "{{ zeek_ls.stdout }}"
       - "{{ ebpf_ls.stdout }}"
+      - "{{ openclaw_ls.stdout }}"
       - "last conn.log line:"
       - "{{ zeek_tail.stdout }}"
+      - "last dns.log line:"
+      - "{{ zeek_dns_tail.stdout }}"
+      - "last http.log line:"
+      - "{{ zeek_http_tail.stdout }}"
+      - "last ssl.log line:"
+      - "{{ zeek_ssl_tail.stdout }}"
+      - "last notice.log line:"
+      - "{{ zeek_notice_tail.stdout }}"
       - "last exec.log line:"
       - "{{ ebpf_exec_tail.stdout }}"
       - "last fileaccess.log line:"
       - "{{ ebpf_file_tail.stdout }}"
       - "last connect.log line:"
       - "{{ ebpf_connect_tail.stdout }}"
+      - "last openclaw runtime.log line:"
+      - "{{ openclaw_runtime_tail.stdout }}"
+      - "last openclaw audit.log line:"
+      - "{{ openclaw_audit_tail.stdout }}"
+      - "last openclaw messages.log line:"
+      - "{{ openclaw_messages_tail.stdout }}"
+      - "last openclaw tool_calls.log line:"
+      - "{{ openclaw_tool_calls_tail.stdout }}"
+      - "last openclaw approvals.log line:"
+      - "{{ openclaw_approvals_tail.stdout }}"
+      - "last openclaw skills.log line:"
+      - "{{ openclaw_skills_tail.stdout }}"
+      - "last openclaw auth.log line:"
+      - "{{ openclaw_auth_tail.stdout }}"

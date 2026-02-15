@@ -15,6 +15,8 @@ def _non_empty(value: str) -> str:
 def _add_bronze_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--bronze-conn-uri", required=True, help="Input Zeek conn.log path or dbfs:/ URI.")
     parser.add_argument("--bronze-dns-uri", required=True, help="Input Zeek dns.log path or dbfs:/ URI.")
+    parser.add_argument("--bronze-http-uri", required=True, help="Input Zeek http.log path or dbfs:/ URI.")
+    parser.add_argument("--bronze-ssl-uri", required=True, help="Input Zeek ssl.log path or dbfs:/ URI.")
     parser.add_argument("--bronze-ebpf-exec-uri", required=True, help="Input eBPF exec.log path or dbfs:/ URI.")
     parser.add_argument(
         "--bronze-ebpf-fileaccess-uri",
@@ -113,6 +115,8 @@ def main() -> int:
         pipeline.run_bronze_to_ocsf_pipeline(
             bronze_conn_uri=args.bronze_conn_uri,
             bronze_dns_uri=args.bronze_dns_uri,
+            bronze_http_uri=args.bronze_http_uri,
+            bronze_ssl_uri=args.bronze_ssl_uri,
             bronze_ebpf_exec_uri=args.bronze_ebpf_exec_uri,
             bronze_ebpf_fileaccess_uri=args.bronze_ebpf_fileaccess_uri,
             bronze_ebpf_connect_uri=args.bronze_ebpf_connect_uri,
@@ -126,6 +130,8 @@ def main() -> int:
         pipeline.run_bronze_to_ocsf_pipeline(
             bronze_conn_uri=args.bronze_conn_uri,
             bronze_dns_uri=args.bronze_dns_uri,
+            bronze_http_uri=args.bronze_http_uri,
+            bronze_ssl_uri=args.bronze_ssl_uri,
             bronze_ebpf_exec_uri=args.bronze_ebpf_exec_uri,
             bronze_ebpf_fileaccess_uri=args.bronze_ebpf_fileaccess_uri,
             bronze_ebpf_connect_uri=args.bronze_ebpf_connect_uri,

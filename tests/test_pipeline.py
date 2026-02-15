@@ -92,6 +92,119 @@ class PipelineRuleTests(unittest.TestCase):
         self.assertEqual(finding["file"]["path"], "/home/system/.ssh/id_rsa")
         self.assertEqual(finding["unmapped"]["process_label"], "stealer")
 
+    def test_parse_file_observation_maps_delete_activity(self) -> None:
+        observation = pipeline.parse_file_observation(
+            {
+                "time_ns": 1700000000000000000,
+                "pid": 99,
+                "ppid": 55,
+                "uid": 1000,
+                "comm": "openclaw",
+                "operation": "unlink",
+                "path": "/tmp/secret.txt",
+            },
+            line_number=1,
+            raw_line='{"operation":"unlink"}\n',
+            fileaccess_path=Path("/tmp/fileaccess.log"),
+            process_catalog={},
+        )
+
+        self.assertIsNotNone(observation)
+        assert observation is not None
+        self.assertEqual(observation["activity_name"], "delete")
+        self.assertEqual(observation["operations"], ["delete"])
+        self.assertEqual(observation["path"], "/tmp/secret.txt")
+        self.assertIsNone(observation["target_path"])
+
+    def test_parse_file_observation_maps_rename_activity(self) -> None:
+        observation = pipeline.parse_file_observation(
+            {
+                "time_ns": 1700000000000000000,
+                "pid": 99,
+                "ppid": 55,
+                "uid": 1000,
+                "comm": "openclaw",
+                "operation": "rename",
+                "path": "/tmp/old.txt",
+                "new_path": "/tmp/new.txt",
+            },
+            line_number=1,
+            raw_line='{"operation":"rename"}\n',
+            fileaccess_path=Path("/tmp/fileaccess.log"),
+            process_catalog={},
+        )
+
+        self.assertIsNotNone(observation)
+        assert observation is not None
+        self.assertEqual(observation["activity_name"], "rename")
+        self.assertEqual(observation["operations"], ["rename"])
+        self.assertEqual(observation["path"], "/tmp/old.txt")
+        self.assertEqual(observation["target_path"], "/tmp/new.txt")
+
+    def test_parse_file_observation_includes_truncate_operation(self) -> None:
+        observation = pipeline.parse_file_observation(
+            {
+                "time_ns": 1700000000000000000,
+                "pid": 99,
+                "ppid": 55,
+                "uid": 1000,
+                "comm": "openclaw",
+                "operation": "open",
+                "path": "/tmp/target.txt",
+                "flags": 512,
+                "truncate": True,
+            },
+            line_number=1,
+            raw_line='{"operation":"open","truncate":true}\n',
+            fileaccess_path=Path("/tmp/fileaccess.log"),
+            process_catalog={},
+        )
+
+        self.assertIsNotNone(observation)
+        assert observation is not None
+        self.assertEqual(observation["activity_name"], "open")
+        self.assertIn("truncate", observation["operations"])
+        self.assertEqual(observation["path"], "/tmp/target.txt")
+
+    def test_build_network_activity_events_enriches_with_ssl_and_http(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            conn_path = Path(tmpdir) / "conn.log"
+            conn_path.write_text(
+                (
+                    '{"ts":1700000000.0,"uid":"C1","id.orig_h":"10.0.0.10","id.orig_p":55555,'
+                    '"id.resp_h":"93.184.216.34","id.resp_p":443,"proto":"tcp","ip_proto":6}\n'
+                ),
+                encoding="utf-8",
+            )
+
+            events = pipeline.build_network_activity_events(
+                conn_path=conn_path,
+                conn_uri=str(conn_path),
+                dns_index={},
+                connect_index={},
+                http_index={
+                    "C1": {
+                        "ts": 1700000000.0,
+                        "host": "api.example.com",
+                        "method": "GET",
+                        "uri": "/x",
+                    }
+                },
+                ssl_index={
+                    "C1": {
+                        "ts": 1700000000.0,
+                        "server_name": "tls.example.com",
+                        "version": "TLSv1.3",
+                    }
+                },
+            )
+
+        self.assertEqual(len(events), 1)
+        _, event = events[0]
+        self.assertEqual(event["dst_endpoint"]["hostname"], "tls.example.com")
+        self.assertEqual(event["unmapped"]["zeek_ssl"]["server_name"], "tls.example.com")
+        self.assertEqual(event["unmapped"]["zeek_http"]["host"], "api.example.com")
+
 
 class PipelineOrchestrationTests(unittest.TestCase):
     def test_run_pipeline_rejects_non_parquet_part_name(self) -> None:
@@ -99,6 +212,8 @@ class PipelineOrchestrationTests(unittest.TestCase):
             pipeline.run_bronze_to_ocsf_pipeline(
                 bronze_conn_uri="/tmp/conn.log",
                 bronze_dns_uri="/tmp/dns.log",
+                bronze_http_uri="/tmp/http.log",
+                bronze_ssl_uri="/tmp/ssl.log",
                 bronze_ebpf_exec_uri="/tmp/exec.log",
                 bronze_ebpf_fileaccess_uri="/tmp/fileaccess.log",
                 bronze_ebpf_connect_uri="/tmp/connect.log",
@@ -112,17 +227,21 @@ class PipelineOrchestrationTests(unittest.TestCase):
             root = Path(tmpdir)
             conn_path = root / "conn.log"
             dns_path = root / "dns.log"
+            http_path = root / "http.log"
+            ssl_path = root / "ssl.log"
             exec_path = root / "exec.log"
             fileaccess_path = root / "fileaccess.log"
             connect_path = root / "connect.log"
             silver_root = root / "silver"
             gold_root = root / "gold"
 
-            for path in (conn_path, dns_path, exec_path, fileaccess_path, connect_path):
+            for path in (conn_path, dns_path, http_path, ssl_path, exec_path, fileaccess_path, connect_path):
                 _write_stub_json(path)
 
             with (
                 patch("open_creel.pipeline.load_dns_index") as load_dns_index,
+                patch("open_creel.pipeline.load_http_index") as load_http_index,
+                patch("open_creel.pipeline.load_ssl_index") as load_ssl_index,
                 patch("open_creel.pipeline.build_process_activity_bundle") as build_process_activity_bundle,
                 patch("open_creel.pipeline.load_connect_index") as load_connect_index,
                 patch("open_creel.pipeline.build_network_activity_events") as build_network_activity_events,
@@ -136,6 +255,8 @@ class PipelineOrchestrationTests(unittest.TestCase):
                 patch("open_creel.pipeline.write_gold_findings", return_value=3) as write_gold_findings,
             ):
                 load_dns_index.return_value = ({}, ["example.com"], 1700000000.0)
+                load_http_index.return_value = {"http": "idx"}
+                load_ssl_index.return_value = {"ssl": "idx"}
                 build_process_activity_bundle.return_value = (
                     [("2026-01-01", {"time": 1000})],
                     [{"ts": 1.0}],
@@ -158,6 +279,8 @@ class PipelineOrchestrationTests(unittest.TestCase):
                 total_processed = pipeline.run_bronze_to_ocsf_pipeline(
                     bronze_conn_uri=str(conn_path),
                     bronze_dns_uri=str(dns_path),
+                    bronze_http_uri=str(http_path),
+                    bronze_ssl_uri=str(ssl_path),
                     bronze_ebpf_exec_uri=str(exec_path),
                     bronze_ebpf_fileaccess_uri=str(fileaccess_path),
                     bronze_ebpf_connect_uri=str(connect_path),
@@ -168,6 +291,16 @@ class PipelineOrchestrationTests(unittest.TestCase):
 
             self.assertEqual(total_processed, 6)
             self.assertEqual(write_partitioned_events.call_count, 3)
+            load_http_index.assert_called_once_with(http_path)
+            load_ssl_index.assert_called_once_with(ssl_path)
+            build_network_activity_events.assert_called_once_with(
+                conn_path,
+                str(conn_path),
+                {},
+                {"idx": "connect"},
+                {"http": "idx"},
+                {"ssl": "idx"},
+            )
             self.assertTrue((silver_root / f"class_uid={pipeline.NETWORK_CLASS_UID}").is_dir())
             self.assertTrue((silver_root / f"class_uid={pipeline.PROCESS_CLASS_UID}").is_dir())
             self.assertTrue((silver_root / f"class_uid={pipeline.FILE_CLASS_UID}").is_dir())

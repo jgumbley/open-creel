@@ -85,6 +85,37 @@ MAPPED_ZEEK_KEYS = {
     "duration",
 }
 
+MAPPED_ZEEK_HTTP_KEYS = {
+    "ts",
+    "uid",
+    "id.orig_h",
+    "id.orig_p",
+    "id.resp_h",
+    "id.resp_p",
+    "method",
+    "host",
+    "uri",
+    "status_code",
+    "status_msg",
+    "user_agent",
+    "request_body_len",
+    "response_body_len",
+}
+
+MAPPED_ZEEK_SSL_KEYS = {
+    "ts",
+    "uid",
+    "id.orig_h",
+    "id.orig_p",
+    "id.resp_h",
+    "id.resp_p",
+    "server_name",
+    "version",
+    "cipher",
+    "curve",
+    "resumed",
+}
+
 MAPPED_EXEC_KEYS = TIME_FIELD_KEYS | {
     "pid",
     "tgid",
@@ -116,9 +147,21 @@ MAPPED_FILEACCESS_KEYS = TIME_FIELD_KEYS | {
     "target_path",
     "flags",
     "open_flags",
+    "operation",
+    "activity_name",
+    "op",
     "read",
     "write",
     "create",
+    "truncate",
+    "old_path",
+    "oldname",
+    "new_path",
+    "newname",
+    "dst_path",
+    "src_path",
+    "source_path",
+    "destination_path",
     "comm",
     "process_name",
     "name",
@@ -292,18 +335,39 @@ def first_str(record: dict[str, Any], keys: list[str]) -> str | None:
 
 
 def normalize_argv(value: Any) -> list[str]:
+    def _normalize_argv_token(token: Any) -> str | None:
+        normalized = str(token).strip()
+        if not normalized:
+            return None
+        lowered = normalized.lower()
+        if lowered in {"(null)", "<null>", "(fault)", "<fault>"}:
+            return None
+        return normalized
+
     if value is None:
         return []
     if isinstance(value, list):
-        return [str(item) for item in value if str(item)]
+        argv: list[str] = []
+        for item in value:
+            normalized = _normalize_argv_token(item)
+            if normalized is not None:
+                argv.append(normalized)
+        return argv
     if isinstance(value, str):
         if not value.strip():
             return []
         try:
-            return [part for part in shlex.split(value) if part]
+            parts = [part for part in shlex.split(value) if part]
         except ValueError:
-            return [value]
-    return [str(value)]
+            parts = [value]
+        argv = []
+        for part in parts:
+            normalized = _normalize_argv_token(part)
+            if normalized is not None:
+                argv.append(normalized)
+        return argv
+    normalized = _normalize_argv_token(value)
+    return [normalized] if normalized is not None else []
 
 
 def normalize_process_name(comm: str | None, binary: str | None, argv: list[str]) -> str | None:
@@ -406,6 +470,20 @@ def normalize_dns_name(name: str) -> str:
     return name.strip().rstrip(".").lower()
 
 
+def normalize_http_host(host: str) -> str:
+    trimmed = host.strip().lower()
+    if not trimmed:
+        return ""
+    if trimmed.startswith("["):
+        closing = trimmed.find("]")
+        if closing != -1:
+            return trimmed[1:closing]
+        return trimmed
+    if ":" in trimmed:
+        return trimmed.split(":", maxsplit=1)[0]
+    return trimmed
+
+
 def load_dns_index(
     dns_path: Path,
 ) -> tuple[dict[tuple[str, str], list[tuple[float, float, str]]], list[str], float | None]:
@@ -457,6 +535,107 @@ def load_dns_index(
     for values in index.values():
         values.sort(key=lambda item: item[0])
     return index, dns_names, latest_dns_ts
+
+
+def load_http_index(http_path: Path) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+
+    for line_number, _, record in read_json_lines(http_path):
+        ts = record_time_seconds(record, http_path, line_number)
+        uid = first_str(record, ["uid"])
+        if uid is None:
+            continue
+
+        observation: dict[str, Any] = {"ts": ts}
+        host = first_str(record, ["host"])
+        if host is not None:
+            normalized_host = normalize_http_host(host)
+            if normalized_host:
+                observation["host"] = normalized_host
+
+        method = first_str(record, ["method"])
+        if method is not None:
+            observation["method"] = method.upper()
+
+        uri = first_str(record, ["uri"])
+        if uri is not None:
+            observation["uri"] = uri
+
+        status_code = first_int(record, ["status_code"])
+        if status_code is not None:
+            observation["status_code"] = status_code
+
+        status_msg = first_str(record, ["status_msg"])
+        if status_msg is not None:
+            observation["status_msg"] = status_msg
+
+        user_agent = first_str(record, ["user_agent"])
+        if user_agent is not None:
+            observation["user_agent"] = user_agent
+
+        request_body_len = first_int(record, ["request_body_len"])
+        if request_body_len is not None:
+            observation["request_body_len"] = request_body_len
+
+        response_body_len = first_int(record, ["response_body_len"])
+        if response_body_len is not None:
+            observation["response_body_len"] = response_body_len
+
+        extras = {key: value for key, value in record.items() if key not in MAPPED_ZEEK_HTTP_KEYS}
+        if extras:
+            observation["record_extras"] = extras
+
+        existing = index.get(uid)
+        existing_ts = as_float(existing.get("ts")) if existing is not None else None
+        if existing_ts is None or ts >= existing_ts:
+            index[uid] = observation
+
+    return index
+
+
+def load_ssl_index(ssl_path: Path) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+
+    for line_number, _, record in read_json_lines(ssl_path):
+        ts = record_time_seconds(record, ssl_path, line_number)
+        uid = first_str(record, ["uid"])
+        if uid is None:
+            continue
+
+        observation: dict[str, Any] = {"ts": ts}
+
+        server_name = first_str(record, ["server_name"])
+        if server_name is not None:
+            normalized_server_name = normalize_dns_name(server_name)
+            if normalized_server_name:
+                observation["server_name"] = normalized_server_name
+
+        tls_version = first_str(record, ["version"])
+        if tls_version is not None:
+            observation["version"] = tls_version
+
+        cipher = first_str(record, ["cipher"])
+        if cipher is not None:
+            observation["cipher"] = cipher
+
+        curve = first_str(record, ["curve"])
+        if curve is not None:
+            observation["curve"] = curve
+
+        resumed = as_bool(record.get("resumed"))
+        if resumed is not None:
+            observation["resumed"] = resumed
+
+        extras = {key: value for key, value in record.items() if key not in MAPPED_ZEEK_SSL_KEYS}
+        if extras:
+            observation["record_extras"] = extras
+
+        existing = index.get(uid)
+        existing_ts = as_float(existing.get("ts")) if existing is not None else None
+        if existing_ts is None or ts >= existing_ts:
+            index[uid] = observation
+
+    return index
 
 
 def resolve_hostname(
@@ -667,6 +846,7 @@ def decode_open_operations(record: dict[str, Any], flags: Any) -> list[str]:
     read_flag = as_bool(record.get("read"))
     write_flag = as_bool(record.get("write"))
     create_flag = as_bool(record.get("create"))
+    truncate_flag = as_bool(record.get("truncate"))
 
     if read_flag is True:
         operations.add("read")
@@ -674,6 +854,8 @@ def decode_open_operations(record: dict[str, Any], flags: Any) -> list[str]:
         operations.add("write")
     if create_flag is True:
         operations.add("create")
+    if truncate_flag is True:
+        operations.add("truncate")
 
     numeric_flags = as_int(flags)
     if numeric_flags is not None:
@@ -684,6 +866,8 @@ def decode_open_operations(record: dict[str, Any], flags: Any) -> list[str]:
             operations.add("write")
         if numeric_flags & 0x40:
             operations.add("create")
+        if numeric_flags & 0x200:
+            operations.add("truncate")
 
     if isinstance(flags, str):
         lowered = flags.lower()
@@ -693,8 +877,25 @@ def decode_open_operations(record: dict[str, Any], flags: Any) -> list[str]:
             operations.add("write")
         if "creat" in lowered:
             operations.add("create")
+        if "trunc" in lowered:
+            operations.add("truncate")
 
     return sorted(operations)
+
+
+def normalize_file_activity_name(value: Any) -> str:
+    if not isinstance(value, str):
+        return "open"
+    normalized = value.strip().lower()
+    if not normalized:
+        return "open"
+    if normalized in {"open", "openat"}:
+        return "open"
+    if normalized in {"delete", "unlink", "unlinkat", "remove"}:
+        return "delete"
+    if normalized in {"rename", "renameat", "renameat2", "move"}:
+        return "rename"
+    return normalized
 
 
 def parse_file_observation(
@@ -710,12 +911,21 @@ def parse_file_observation(
     if pid is None:
         raise ValueError(f"{fileaccess_path}:{line_number}: required field 'pid' is missing or invalid")
 
-    path = first_str(record, ["path", "file", "filename", "target_path"])
+    activity_name = normalize_file_activity_name(first_value(record, ["operation", "activity_name", "op"]))
+    path = first_str(
+        record,
+        ["path", "file", "filename", "target_path", "old_path", "oldname", "src_path", "source_path"],
+    )
     if path is None:
         return None
 
     flags = first_value(record, ["flags", "open_flags"])
-    operations = decode_open_operations(record, flags)
+    operations: list[str]
+    if activity_name == "open":
+        operations = decode_open_operations(record, flags)
+    else:
+        operations = [activity_name]
+    target_path = first_str(record, ["new_path", "newname", "dst_path", "destination_path"])
     process_state = process_catalog.get(pid, {})
 
     ppid = first_int(record, ["ppid"])
@@ -755,7 +965,9 @@ def parse_file_observation(
         "binary": binary,
         "argv": argv,
         "path": path,
+        "target_path": target_path,
         "flags": flags,
+        "activity_name": activity_name,
         "operations": operations,
         "lineage": lineage if isinstance(lineage, list) else [],
     }
@@ -772,7 +984,7 @@ def map_file_activity_event(observation: dict[str, Any], fileaccess_uri: str) ->
         "severity_id": FILE_SEVERITY_ID,
         "type_uid": FILE_TYPE_UID,
         "metadata": metadata("ebpf.fileaccess", "ebpf", fileaccess_uri, time_ms),
-        "activity_name": "open",
+        "activity_name": observation["activity_name"],
         "file": {"path": observation["path"]},
         "raw_data": observation["raw_line"].rstrip("\n"),
     }
@@ -784,8 +996,11 @@ def map_file_activity_event(observation: dict[str, Any], fileaccess_uri: str) ->
     unmapped: dict[str, Any] = {}
     if observation["flags"] is not None:
         unmapped["open_flags"] = observation["flags"]
+    target_path = observation.get("target_path")
+    if isinstance(target_path, str) and target_path:
+        unmapped["target_path"] = target_path
     if observation["operations"]:
-        unmapped["open_ops"] = observation["operations"]
+        unmapped["file_ops"] = observation["operations"]
     extras = {
         key: value
         for key, value in observation["record"].items()
@@ -1009,6 +1224,8 @@ def build_network_activity_events(
     conn_uri: str,
     dns_index: dict[tuple[str, str], list[tuple[float, float, str]]],
     connect_index: dict[tuple[str, int], list[dict[str, Any]]],
+    http_index: dict[str, dict[str, Any]],
+    ssl_index: dict[str, dict[str, Any]],
 ) -> list[tuple[str, dict[str, Any]]]:
     events: list[tuple[str, dict[str, Any]]] = []
     for line_number, raw_line, record in read_json_lines(conn_path):
@@ -1022,6 +1239,46 @@ def build_network_activity_events(
         )
         if resolved_name and "dst_endpoint" in event:
             event["dst_endpoint"]["hostname"] = resolved_name
+
+        uid = first_str(record, ["uid"])
+        if uid is not None:
+            ssl_observation = ssl_index.get(uid)
+            if ssl_observation is not None:
+                server_name = ssl_observation.get("server_name")
+                if (
+                    isinstance(server_name, str)
+                    and server_name
+                    and "dst_endpoint" in event
+                    and "hostname" not in event["dst_endpoint"]
+                ):
+                    event["dst_endpoint"]["hostname"] = server_name
+
+                ssl_unmapped = {key: value for key, value in ssl_observation.items() if key != "ts"}
+                if ssl_unmapped:
+                    unmapped = event.get("unmapped")
+                    if not isinstance(unmapped, dict):
+                        unmapped = {}
+                    unmapped["zeek_ssl"] = ssl_unmapped
+                    event["unmapped"] = unmapped
+
+            http_observation = http_index.get(uid)
+            if http_observation is not None:
+                host = http_observation.get("host")
+                if (
+                    isinstance(host, str)
+                    and host
+                    and "dst_endpoint" in event
+                    and "hostname" not in event["dst_endpoint"]
+                ):
+                    event["dst_endpoint"]["hostname"] = host
+
+                http_unmapped = {key: value for key, value in http_observation.items() if key != "ts"}
+                if http_unmapped:
+                    unmapped = event.get("unmapped")
+                    if not isinstance(unmapped, dict):
+                        unmapped = {}
+                    unmapped["zeek_http"] = http_unmapped
+                    event["unmapped"] = unmapped
 
         actor_process = resolve_connect_actor(
             connect_index=connect_index,
@@ -1346,6 +1603,8 @@ def write_gold_findings(
 def run_bronze_to_ocsf_pipeline(
     bronze_conn_uri: str,
     bronze_dns_uri: str,
+    bronze_http_uri: str,
+    bronze_ssl_uri: str,
     bronze_ebpf_exec_uri: str,
     bronze_ebpf_fileaccess_uri: str,
     bronze_ebpf_connect_uri: str,
@@ -1358,6 +1617,8 @@ def run_bronze_to_ocsf_pipeline(
 
     conn_path = resolve_uri(bronze_conn_uri)
     dns_path = resolve_uri(bronze_dns_uri)
+    http_path = resolve_uri(bronze_http_uri)
+    ssl_path = resolve_uri(bronze_ssl_uri)
     exec_path = resolve_uri(bronze_ebpf_exec_uri)
     fileaccess_path = resolve_uri(bronze_ebpf_fileaccess_uri)
     connect_path = resolve_uri(bronze_ebpf_connect_uri)
@@ -1367,6 +1628,8 @@ def run_bronze_to_ocsf_pipeline(
     required_inputs = (
         conn_path,
         dns_path,
+        http_path,
+        ssl_path,
         exec_path,
         fileaccess_path,
         connect_path,
@@ -1376,9 +1639,11 @@ def run_bronze_to_ocsf_pipeline(
             raise FileNotFoundError(f"bronze input does not exist: {input_path}")
 
     dns_index, dns_names, latest_dns_ts = load_dns_index(dns_path)
+    http_index = load_http_index(http_path)
+    ssl_index = load_ssl_index(ssl_path)
     process_events, exec_observations, process_catalog = build_process_activity_bundle(exec_path, bronze_ebpf_exec_uri)
     connect_index = load_connect_index(connect_path, process_catalog)
-    network_events = build_network_activity_events(conn_path, bronze_conn_uri, dns_index, connect_index)
+    network_events = build_network_activity_events(conn_path, bronze_conn_uri, dns_index, connect_index, http_index, ssl_index)
     file_events, file_observations = build_file_activity_events(fileaccess_path, bronze_ebpf_fileaccess_uri, process_catalog)
 
     class_roots = {
