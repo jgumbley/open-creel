@@ -10,11 +10,13 @@ help:
 	@echo "  make silver-proof    Show latest mapped OCSF silver record"
 	@echo "  make silver-network-summary  Summarize OCSF silver network activity records"
 	@echo "  make silver-top-dst-hour  Top destination IPs by bytes in the latest hour"
+	@echo "  make silver-domain-check DOMAIN=example.com  Search silver network hostnames for a domain"
 	@echo "  make gold            Run stub spawner with gold detection rules"
 	@echo "  make gold-parquet    Materialize gold Parquet files from mapped JSONL"
 	@echo "  make gold-proof      Show latest mapped OCSF gold detection record"
 	@echo "  make gold-list       List all mapped OCSF gold detection records"
 	@echo "  make gold-severity-ge3  List gold detections where severity_id >= 3"
+	@echo "  make bronze-dns-domain-check DOMAIN=example.com  Search bronze DNS queries for a domain"
 	@echo "  make clean-silver    Remove generated silver output"
 	@echo "  make clean-gold      Remove generated gold output"
 
@@ -33,8 +35,9 @@ BRONZE_EBPF_CONNECT_URI ?= /var/lib/open-creel/data/bronze/ebpf/connect.log
 SILVER_ROOT_URI ?= /tmp/open-creel/data/silver/ocsf
 GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
 PART_NAME ?= part-00000.jsonl
+DOMAIN ?=
 
-.PHONY: infra bronze silver silver-parquet silver-proof silver-network-summary silver-top-dst-hour gold gold-parquet gold-proof gold-list gold-severity-ge3 clean-silver clean-gold
+.PHONY: infra bronze silver silver-parquet silver-proof silver-network-summary silver-top-dst-hour silver-domain-check gold gold-parquet gold-proof gold-list gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 infra:
 	ansible-playbook creel.yml -c local -K
@@ -147,6 +150,29 @@ silver-top-dst-hour: .venv/
 	echo "top_dst_ips_last_hour=ip,total_bytes"; \
 	$(VENV_PYTHON) -c "import csv,duckdb,sys;path=sys.argv[1].replace(\"'\", \"''\");rows=duckdb.sql(f\"WITH t AS (SELECT * FROM read_parquet('{path}')), b AS (SELECT MAX(time) AS max_time_ms FROM t) SELECT t.dst_endpoint.ip AS ip, SUM(COALESCE(t.traffic.bytes, 0)) AS total_bytes FROM t, b WHERE t.time >= b.max_time_ms - 3600000 AND t.dst_endpoint.ip IS NOT NULL GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT 10\").fetchall();w=csv.writer(sys.stdout,lineterminator='\\n');[w.writerow(row) for row in rows]" "$$file"
 
+silver-domain-check: .venv/
+	@set -eu; \
+	if [ -z "$(DOMAIN)" ]; then \
+		echo "DOMAIN is required (example: make silver-domain-check DOMAIN=example.com)"; \
+		exit 2; \
+	fi; \
+	class_dir="$(SILVER_ROOT_URI)/class_uid=4001"; \
+	if [ ! -d "$$class_dir" ]; then \
+		echo "domain=$(DOMAIN)"; \
+		echo "network_exact_hits=0"; \
+		echo "network_like_hits=0"; \
+		echo "matching_network_hostnames=hostname,hits"; \
+		exit 0; \
+	fi; \
+	if ! find "$$class_dir" -type f -name '*.parquet' | grep -q .; then \
+		echo "domain=$(DOMAIN)"; \
+		echo "network_exact_hits=0"; \
+		echo "network_like_hits=0"; \
+		echo "matching_network_hostnames=hostname,hits"; \
+		exit 0; \
+	fi; \
+	$(VENV_PYTHON) -c "import csv,duckdb,sys;class_dir=sys.argv[1].rstrip('/');domain=sys.argv[2].strip().lower();domain_sql=domain.replace(\"'\", \"''\");pattern=f\"{class_dir}/date=*/*.parquet\";con=duckdb.connect();exact=con.execute(f\"SELECT COUNT(*) FROM read_parquet('{pattern}') WHERE lower(coalesce(dst_endpoint.hostname,'')) = '{domain_sql}'\").fetchone()[0];like=con.execute(f\"SELECT COUNT(*) FROM read_parquet('{pattern}') WHERE lower(coalesce(dst_endpoint.hostname,'')) LIKE '%{domain_sql}%'\").fetchone()[0];print(f\"domain={domain}\");print(f\"network_exact_hits={exact}\");print(f\"network_like_hits={like}\");print(\"matching_network_hostnames=hostname,hits\");rows=con.execute(f\"SELECT dst_endpoint.hostname AS hostname, COUNT(*) AS hits FROM read_parquet('{pattern}') WHERE lower(coalesce(dst_endpoint.hostname,'')) LIKE '%{domain_sql}%' GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT 20\").fetchall();w=csv.writer(sys.stdout,lineterminator='\\n');[w.writerow(row) for row in rows]" "$$class_dir" "$(DOMAIN)"
+
 gold: .venv/
 	$(PYTHON) stub_spawner.py --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --gold-uri "$(GOLD_ROOT_URI)" --part-name "$(PART_NAME)"
 	$(MAKE) silver-parquet
@@ -224,6 +250,21 @@ gold-severity-ge3: .venv/
 	echo "gold_file=$$file"; \
 	echo "severity_ge3=time,severity_id,rule_uid,title"; \
 	$(VENV_PYTHON) -c "import csv,duckdb,sys;path=sys.argv[1].replace(\"'\", \"''\");rows=duckdb.sql(f\"SELECT time, severity_id, finding_info.uid AS rule_uid, finding_info.title AS title FROM read_parquet('{path}') WHERE severity_id >= 3 ORDER BY time DESC\").fetchall();w=csv.writer(sys.stdout,lineterminator='\\n');[w.writerow(row) for row in rows]" "$$file"
+
+bronze-dns-domain-check: .venv/
+	@set -eu; \
+	if [ -z "$(DOMAIN)" ]; then \
+		echo "DOMAIN is required (example: make bronze-dns-domain-check DOMAIN=example.com)"; \
+		exit 2; \
+	fi; \
+	if [ ! -f "$(BRONZE_DNS_URI)" ]; then \
+		echo "domain=$(DOMAIN)"; \
+		echo "dns_exact_hits=0"; \
+		echo "dns_like_hits=0"; \
+		echo "matching_dns_queries=query,hits"; \
+		exit 0; \
+	fi; \
+	$(VENV_PYTHON) -c "import csv,duckdb,sys;path=sys.argv[1].replace(\"'\", \"''\");domain=sys.argv[2].strip().lower();domain_sql=domain.replace(\"'\", \"''\");con=duckdb.connect();exact=con.execute(f\"SELECT COUNT(*) FROM read_ndjson_auto('{path}') WHERE lower(coalesce(query,'')) = '{domain_sql}'\").fetchone()[0];like=con.execute(f\"SELECT COUNT(*) FROM read_ndjson_auto('{path}') WHERE lower(coalesce(query,'')) LIKE '%{domain_sql}%'\").fetchone()[0];print(f\"domain={domain}\");print(f\"dns_exact_hits={exact}\");print(f\"dns_like_hits={like}\");print(\"matching_dns_queries=query,hits\");rows=con.execute(f\"SELECT query, COUNT(*) AS hits FROM read_ndjson_auto('{path}') WHERE lower(coalesce(query,'')) LIKE '%{domain_sql}%' GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT 20\").fetchall();w=csv.writer(sys.stdout,lineterminator='\\n');[w.writerow(row) for row in rows]" "$(BRONZE_DNS_URI)" "$(DOMAIN)"
 
 clean-silver:
 	rm -rf "$(SILVER_ROOT_URI)"

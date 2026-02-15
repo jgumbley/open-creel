@@ -43,6 +43,7 @@ Pane "$existing_pane" for "$pane_label" already exists in this session.
 No new pane was created.
 To rerun in that pane: tmux send-keys -t $existing_pane C-m
 To capture output: tmux capture-pane -pt $existing_pane
+Reminder: close used panes when finished (Ctrl-b x or tmux kill-pane -t $existing_pane).
 EOF
   exit 0
 fi
@@ -92,7 +93,8 @@ while :; do
 [agent:${pane_label}] Command exited with status ${status}.
 Reuse this same pane to run again: press Enter.
 From the main terminal you can also run: tmux send-keys -t "$TMUX_PANE" C-m
-Close the pane (Ctrl-b x) to stop.
+Reminder: close used panes when finished.
+Close this pane with Ctrl-b x, or from the main terminal: tmux kill-pane -t "$TMUX_PANE"
 
 EOF
 
@@ -116,4 +118,5 @@ Watch the pane above for prompts. Type any sudo/BECOME passwords there, not here
 To capture its output later: tmux capture-pane -pt $pane_id
 To rerun in the same pane (no new pane needed): tmux send-keys -t $pane_id C-m
 The pane stays open after each run; press Enter in that pane to rerun, or close it to stop.
+Reminder: close used panes when finished (Ctrl-b x or tmux kill-pane -t $pane_id).
 EOF

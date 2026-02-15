@@ -6,11 +6,11 @@ Provisioning in this repo installs OpenCreel (the monitor), not OpenClaw itself.
 Thin slice:
 - Bronze:
   - Zeek JSON logs under `/var/lib/open-creel/data/bronze/zeek`.
-  - eBPF JSONL logs under `/var/lib/open-creel/data/bronze/ebpf`, scoped to `openclaw` seed process names and their descendants:
+  - eBPF JSONL logs under `/var/lib/open-creel/data/bronze/ebpf`:
     - `exec.log` from `tracepoint/sched/sched_process_exec`
     - `fileaccess.log` from `tracepoint/syscalls/sys_enter_openat`
-    - `connect.log` from `tracepoint/syscalls/sys_enter_connect`
-  - If no scoped OpenClaw process tree is active, eBPF logs can remain empty by design.
+    - `connect.log` from `tracepoint/syscalls/sys_enter_connect` (host-wide, not OpenClaw-scoped)
+  - If no scoped OpenClaw process tree is active, `exec.log` and `fileaccess.log` can remain empty by design.
 - Silver:
   - OCSF `network_activity` (`class_uid=4001`) from Zeek `conn.log`, enriched by Zeek `dns.log` and eBPF `connect.log` actor attribution.
   - OCSF `process_activity` (`class_uid=1007`) from eBPF `exec.log` with process lineage.
