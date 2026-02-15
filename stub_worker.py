@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import duckdb
+
 OCSF_VERSION = "1.7.0"
 
 SYSTEM_ACTIVITY_CATEGORY_UID = 1
@@ -1275,26 +1277,63 @@ def build_sensitive_file_access_findings(
     return findings
 
 
+def write_parquet_records(out_path: Path, records: list[dict[str, Any]]) -> int:
+    if not records:
+        return 0
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = duckdb.connect()
+    try:
+        conn.execute("CREATE TEMP TABLE events_json(raw_json VARCHAR)")
+        rows = [
+            (json.dumps(record, separators=(",", ":"), sort_keys=True),)
+            for record in records
+        ]
+        conn.executemany("INSERT INTO events_json VALUES (?)", rows)
+        schema_json = conn.execute(
+            "SELECT json_group_structure(raw_json::JSON) FROM events_json"
+        ).fetchone()[0]
+        if not isinstance(schema_json, str) or not schema_json:
+            raise ValueError(f"failed to infer json schema for parquet output: {out_path}")
+        schema_sql = schema_json.replace("'", "''")
+        parquet_uri = str(out_path).replace("'", "''")
+        conn.execute(
+            f"""
+            COPY (
+                WITH typed AS (
+                    SELECT raw_json::JSON AS raw_json
+                    FROM events_json
+                ),
+                parsed AS (
+                    SELECT from_json(raw_json, '{schema_sql}') AS event
+                    FROM typed
+                )
+                SELECT event.*
+                FROM parsed
+            ) TO '{parquet_uri}' (FORMAT PARQUET, COMPRESSION ZSTD)
+            """
+        )
+    finally:
+        conn.close()
+    return len(records)
+
+
 def write_partitioned_events(
     class_root: Path,
     part_name: str,
     events: list[tuple[str, dict[str, Any]]],
 ) -> tuple[int, int]:
-    outputs: dict[Path, Any] = {}
+    partitioned_events: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for partition_date, event in events:
+        partitioned_events[partition_date].append(event)
+
     written = 0
-    try:
-        for partition_date, event in events:
-            out_path = class_root / f"date={partition_date}" / part_name
-            if out_path not in outputs:
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                outputs[out_path] = out_path.open("w", encoding="utf-8")
-            outputs[out_path].write(json.dumps(event, separators=(",", ":"), sort_keys=True))
-            outputs[out_path].write("\n")
-            written += 1
-    finally:
-        for output in outputs.values():
-            output.close()
-    return written, len(outputs)
+    output_files = 0
+    for partition_date in sorted(partitioned_events):
+        out_path = class_root / f"date={partition_date}" / part_name
+        written += write_parquet_records(out_path, partitioned_events[partition_date])
+        output_files += 1
+    return written, output_files
 
 
 def write_gold_findings(
@@ -1308,26 +1347,20 @@ def write_gold_findings(
     if not findings:
         return 0
 
-    outputs: dict[Path, Any] = {}
+    partitioned_findings: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for finding in findings:
+        detection_time_ms = as_int(finding.get("time"))
+        if detection_time_ms is None:
+            continue
+        partition_date = datetime.fromtimestamp(
+            detection_time_ms / 1000, tz=timezone.utc
+        ).strftime("%Y-%m-%d")
+        partitioned_findings[partition_date].append(finding)
+
     written = 0
-    try:
-        for finding in findings:
-            detection_time_ms = as_int(finding.get("time"))
-            if detection_time_ms is None:
-                continue
-            partition_date = datetime.fromtimestamp(
-                detection_time_ms / 1000, tz=timezone.utc
-            ).strftime("%Y-%m-%d")
-            out_path = class_root / f"date={partition_date}" / part_name
-            if out_path not in outputs:
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                outputs[out_path] = out_path.open("w", encoding="utf-8")
-            outputs[out_path].write(json.dumps(finding, separators=(",", ":"), sort_keys=True))
-            outputs[out_path].write("\n")
-            written += 1
-    finally:
-        for output in outputs.values():
-            output.close()
+    for partition_date in sorted(partitioned_findings):
+        out_path = class_root / f"date={partition_date}" / part_name
+        written += write_parquet_records(out_path, partitioned_findings[partition_date])
     return written
 
 
@@ -1341,6 +1374,9 @@ def run(
     gold_uri: str | None,
     part_name: str,
 ) -> int:
+    if not part_name.endswith(".parquet"):
+        raise ValueError(f"part_name must end with .parquet: {part_name}")
+
     conn_path = resolve_uri(bronze_conn_uri)
     dns_path = resolve_uri(bronze_dns_uri)
     exec_path = resolve_uri(bronze_ebpf_exec_uri)
@@ -1414,7 +1450,7 @@ def run(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Map Zeek and eBPF bronze JSONL to OCSF silver "
+            "Map Zeek and eBPF bronze logs to OCSF silver parquet "
             "and optional gold detections."
         )
     )
@@ -1433,7 +1469,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--silver-uri", required=True, help="Output silver root path or dbfs:/ URI.")
     parser.add_argument("--gold-uri", help="Output gold root path or dbfs:/ URI.")
-    parser.add_argument("--part-name", default="part-00000.jsonl", help="Output part filename per partition.")
+    parser.add_argument("--part-name", default="part-00000.parquet", help="Output parquet filename per partition.")
     return parser.parse_args()
 
 

@@ -6,13 +6,11 @@ help:
 	@echo "  make infra           Run core system setup and install Zeek (sudo/become prompts)"
 	@echo "  make bronze          Show bronze Zeek + eBPF logs"
 	@echo "  make silver          Run stub spawner to map bronze Zeek/eBPF -> OCSF silver"
-	@echo "  make silver-parquet  Materialize silver Parquet files from mapped JSONL"
 	@echo "  make silver-proof    Show latest mapped OCSF silver record"
 	@echo "  make silver-network-summary  Summarize OCSF silver network activity records"
 	@echo "  make silver-top-dst-hour  Top destination IPs by bytes in the latest hour"
 	@echo "  make silver-domain-check DOMAIN=example.com  Search silver network hostnames for a domain"
 	@echo "  make gold            Run stub spawner with gold detection rules"
-	@echo "  make gold-parquet    Materialize gold Parquet files from mapped JSONL"
 	@echo "  make gold-proof      Show latest mapped OCSF gold detection record"
 	@echo "  make gold-list       List all mapped OCSF gold detection records"
 	@echo "  make gold-severity-ge3  List gold detections where severity_id >= 3"
@@ -34,10 +32,10 @@ BRONZE_EBPF_FILEACCESS_URI ?= /var/lib/open-creel/data/bronze/ebpf/fileaccess.lo
 BRONZE_EBPF_CONNECT_URI ?= /var/lib/open-creel/data/bronze/ebpf/connect.log
 SILVER_ROOT_URI ?= /tmp/open-creel/data/silver/ocsf
 GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
-PART_NAME ?= part-00000.jsonl
+PART_NAME ?= part-00000.parquet
 DOMAIN ?=
 
-.PHONY: infra bronze silver silver-parquet silver-proof silver-network-summary silver-top-dst-hour silver-domain-check gold gold-parquet gold-proof gold-list gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
+.PHONY: infra bronze silver silver-proof silver-network-summary silver-top-dst-hour silver-domain-check gold gold-proof gold-list gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 infra:
 	ansible-playbook creel.yml -c local -K
@@ -53,23 +51,8 @@ bronze:
 
 silver: .venv/
 	$(PYTHON) stub_spawner.py --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --part-name "$(PART_NAME)"
-	$(MAKE) silver-parquet
 
-silver-parquet: .venv/
-	@set -eu; \
-	for class_uid in 4001 1007 1001; do \
-		class_dir="$(SILVER_ROOT_URI)/class_uid=$$class_uid"; \
-		if [ ! -d "$$class_dir" ]; then \
-			continue; \
-		fi; \
-		for file in $$(find "$$class_dir" -type f -name '*.jsonl' | sort); do \
-			parquet_file="$${file%.jsonl}.parquet"; \
-			echo "silver_parquet_file=$$parquet_file"; \
-			$(VENV_PYTHON) -c "import duckdb,sys;src=sys.argv[1].replace(\"'\", \"''\");dst=sys.argv[2].replace(\"'\", \"''\");duckdb.sql(f\"COPY (SELECT * FROM read_ndjson_auto('{src}')) TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)\")" "$$file" "$$parquet_file"; \
-		done; \
-	done
-
-silver-proof:
+silver-proof: .venv/
 	@set -eu; \
 	for class_uid in 4001 1007 1001; do \
 		class_dir="$(SILVER_ROOT_URI)/class_uid=$$class_uid"; \
@@ -81,7 +64,7 @@ silver-proof:
 			continue; \
 		fi; \
 		ls -lah "$$class_dir"; \
-		file="$$(find "$$class_dir" -type f -name '*.jsonl' | sort | tail -n 1)"; \
+		file="$$(find "$$class_dir" -type f -name '*.parquet' | sort | tail -n 1)"; \
 		if [ -z "$$file" ]; then \
 			echo "silver_rows=0"; \
 			echo "silver_file=(none)"; \
@@ -89,8 +72,13 @@ silver-proof:
 			continue; \
 		fi; \
 		echo "silver_file=$$file"; \
-		echo "silver_rows=$$(wc -l < "$$file")"; \
-		tail -n 1 "$$file"; \
+		silver_rows=$$($(VENV_PYTHON) -c "import duckdb,sys;path=sys.argv[1].replace(\"'\", \"''\");print(duckdb.sql(f\"SELECT COUNT(*) FROM read_parquet('{path}')\").fetchone()[0])" "$$file"); \
+		echo "silver_rows=$$silver_rows"; \
+		if [ "$$silver_rows" = "0" ]; then \
+			echo "no silver records present"; \
+			continue; \
+		fi; \
+		$(VENV_PYTHON) -c "import duckdb,json,sys;path=sys.argv[1].replace(\"'\", \"''\");rel=duckdb.sql(f\"SELECT * FROM read_parquet('{path}') ORDER BY time DESC LIMIT 1\");row=rel.fetchone();cols=[col[0] for col in rel.description];print(json.dumps(dict(zip(cols,row)),separators=(',', ':'),default=str))" "$$file"; \
 		done
 
 silver-network-summary: .venv/
@@ -175,22 +163,8 @@ silver-domain-check: .venv/
 
 gold: .venv/
 	$(PYTHON) stub_spawner.py --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --gold-uri "$(GOLD_ROOT_URI)" --part-name "$(PART_NAME)"
-	$(MAKE) silver-parquet
-	$(MAKE) gold-parquet
 
-gold-parquet: .venv/
-	@set -eu; \
-	class_dir="$(GOLD_ROOT_URI)/class_uid=2004"; \
-	if [ ! -d "$$class_dir" ]; then \
-		exit 0; \
-	fi; \
-	for file in $$(find "$$class_dir" -type f -name '*.jsonl' | sort); do \
-		parquet_file="$${file%.jsonl}.parquet"; \
-		echo "gold_parquet_file=$$parquet_file"; \
-		$(VENV_PYTHON) -c "import duckdb,sys;src=sys.argv[1].replace(\"'\", \"''\");dst=sys.argv[2].replace(\"'\", \"''\");duckdb.sql(f\"COPY (SELECT * FROM read_ndjson_auto('{src}')) TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD)\")" "$$file" "$$parquet_file"; \
-	done
-
-gold-proof:
+gold-proof: .venv/
 	@set -eu; \
 	class_dir="$(GOLD_ROOT_URI)/class_uid=2004"; \
 	if [ ! -d "$$class_dir" ]; then \
@@ -200,7 +174,7 @@ gold-proof:
 		exit 0; \
 	fi; \
 	ls -lah "$$class_dir"; \
-	file="$$(find "$$class_dir" -type f -name '*.jsonl' | sort | tail -n 1)"; \
+	file="$$(find "$$class_dir" -type f -name '*.parquet' | sort | tail -n 1)"; \
 	if [ -z "$$file" ]; then \
 		echo "gold_rows=0"; \
 		echo "gold_file=(none)"; \
@@ -208,10 +182,15 @@ gold-proof:
 		exit 0; \
 	fi; \
 	echo "gold_file=$$file"; \
-	echo "gold_rows=$$(wc -l < "$$file")"; \
-	tail -n 1 "$$file"
+	gold_rows=$$($(VENV_PYTHON) -c "import duckdb,sys;path=sys.argv[1].replace(\"'\", \"''\");print(duckdb.sql(f\"SELECT COUNT(*) FROM read_parquet('{path}')\").fetchone()[0])" "$$file"); \
+	echo "gold_rows=$$gold_rows"; \
+	if [ "$$gold_rows" = "0" ]; then \
+		echo "no gold detections present"; \
+		exit 0; \
+	fi; \
+	$(VENV_PYTHON) -c "import duckdb,json,sys;path=sys.argv[1].replace(\"'\", \"''\");rel=duckdb.sql(f\"SELECT * FROM read_parquet('{path}') ORDER BY time DESC LIMIT 1\");row=rel.fetchone();cols=[col[0] for col in rel.description];print(json.dumps(dict(zip(cols,row)),separators=(',', ':'),default=str))" "$$file"
 
-gold-list:
+gold-list: .venv/
 	@set -eu; \
 	class_dir="$(GOLD_ROOT_URI)/class_uid=2004"; \
 	if [ ! -d "$$class_dir" ]; then \
@@ -220,7 +199,7 @@ gold-list:
 		echo "no gold detections present"; \
 		exit 0; \
 	fi; \
-	file="$$(find "$$class_dir" -type f -name '*.jsonl' | sort | tail -n 1)"; \
+	file="$$(find "$$class_dir" -type f -name '*.parquet' | sort | tail -n 1)"; \
 	if [ -z "$$file" ]; then \
 		echo "gold_rows=0"; \
 		echo "gold_file=(none)"; \
@@ -228,8 +207,13 @@ gold-list:
 		exit 0; \
 	fi; \
 	echo "gold_file=$$file"; \
-	echo "gold_rows=$$(wc -l < "$$file")"; \
-	nl -ba "$$file"
+	gold_rows=$$($(VENV_PYTHON) -c "import duckdb,sys;path=sys.argv[1].replace(\"'\", \"''\");print(duckdb.sql(f\"SELECT COUNT(*) FROM read_parquet('{path}')\").fetchone()[0])" "$$file"); \
+	echo "gold_rows=$$gold_rows"; \
+	if [ "$$gold_rows" = "0" ]; then \
+		echo "no gold detections present"; \
+		exit 0; \
+	fi; \
+	$(VENV_PYTHON) -c "import duckdb,json,sys;path=sys.argv[1].replace(\"'\", \"''\");rel=duckdb.sql(f\"SELECT * FROM read_parquet('{path}') ORDER BY time ASC\");cols=[col[0] for col in rel.description];rows=rel.fetchall();[print(f\"{idx}\\t{json.dumps(dict(zip(cols,row)),separators=(',', ':'),default=str)}\") for idx,row in enumerate(rows, start=1)]" "$$file"
 
 gold-severity-ge3: .venv/
 	@set -eu; \

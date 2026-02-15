@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--silver-uri", required=True, help="Output silver root path or dbfs:/ URI.")
     parser.add_argument("--gold-uri", help="Output gold root path or dbfs:/ URI.")
-    parser.add_argument("--part-name", default="part-00000.jsonl", help="Output part filename per partition.")
+    parser.add_argument("--part-name", default="part-00000.parquet", help="Output parquet filename per partition.")
     return parser.parse_args()
 
 
