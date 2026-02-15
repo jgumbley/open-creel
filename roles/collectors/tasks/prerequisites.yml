@@ -1,0 +1,32 @@
+---
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Install base dependencies for runtime
+  ansible.builtin.apt:
+    name:
+      - bpftrace
+      - ca-certificates
+      - curl
+      - gnupg
+      - iproute2
+    state: present
+
+- name: Create OpenCreel data and config directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/lib/open-creel/data
+    - /var/lib/open-creel/data/bronze/zeek
+    - /var/lib/open-creel/data/bronze/ebpf
+    - /var/lib/open-creel/data/silver
+    - /var/lib/open-creel/data/gold
+    - /etc/open-creel/zeek
+    - /etc/open-creel/ebpf

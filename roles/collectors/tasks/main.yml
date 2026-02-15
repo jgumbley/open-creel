@@ -1,0 +1,66 @@
+---
+- name: Include collector prerequisites
+  ansible.builtin.import_tasks: prerequisites.yml
+
+- name: Include Zeek collector tasks
+  ansible.builtin.import_tasks: zeek.yml
+
+- name: Include eBPF collector tasks
+  ansible.builtin.import_tasks: ebpf.yml
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start open-creel Zeek service
+  ansible.builtin.systemd:
+    name: open-creel-zeek.service
+    enabled: true
+    state: started
+
+- name: Enable and start open-creel eBPF services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - open-creel-ebpf-exec.service
+    - open-creel-ebpf-fileaccess.service
+    - open-creel-ebpf-connect.service
+
+- name: Restart open-creel Zeek service when unit or script changes
+  ansible.builtin.systemd:
+    name: open-creel-zeek.service
+    state: restarted
+  when: zeek_script_write.changed or zeek_unit_write.changed
+
+- name: Restart open-creel eBPF services when unit or script changes
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - open-creel-ebpf-exec.service
+    - open-creel-ebpf-fileaccess.service
+    - open-creel-ebpf-connect.service
+  when: >
+    ebpf_exec_script_write.changed or
+    ebpf_file_script_write.changed or
+    ebpf_connect_script_write.changed or
+    ebpf_exec_unit_write.changed or
+    ebpf_file_unit_write.changed or
+    ebpf_connect_unit_write.changed
+
+- name: Verify open-creel eBPF services are active
+  ansible.builtin.command: systemctl is-active "{{ item }}"
+  register: ebpf_service_active
+  retries: 10
+  delay: 2
+  until: ebpf_service_active.stdout == "active"
+  changed_when: false
+  loop:
+    - open-creel-ebpf-exec.service
+    - open-creel-ebpf-fileaccess.service
+    - open-creel-ebpf-connect.service
+
+- name: Include collector proof tasks
+  ansible.builtin.import_tasks: proof.yml

@@ -1,0 +1,64 @@
+---
+- name: Install Zeek repository signing key
+  ansible.builtin.get_url:
+    url: https://download.opensuse.org/repositories/security:/zeek/xUbuntu_24.04/Release.key
+    dest: /etc/apt/keyrings/zeek.asc
+    mode: "0644"
+
+- name: Add Zeek apt repository
+  ansible.builtin.apt_repository:
+    repo: deb [signed-by=/etc/apt/keyrings/zeek.asc] https://download.opensuse.org/repositories/security:/zeek/xUbuntu_24.04/ /
+    filename: zeek
+    state: present
+    update_cache: true
+
+- name: Install Zeek
+  ansible.builtin.apt:
+    name: zeek
+    state: present
+
+- name: Write Zeek JSON logging script
+  ansible.builtin.copy:
+    dest: /etc/open-creel/zeek/open-creel.zeek
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      @load policy/tuning/json-logs.zeek
+      redef Log::default_logdir = "/var/lib/open-creel/data/bronze/zeek";
+  register: zeek_script_write
+
+- name: Pick capture interface from default route
+  ansible.builtin.shell: |
+    set -euo pipefail
+    ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'
+  register: creel_iface_cmd
+  changed_when: false
+  args:
+    executable: /bin/bash
+
+- name: Set capture interface fact
+  ansible.builtin.set_fact:
+    creel_iface: "{{ creel_iface_cmd.stdout }}"
+
+- name: Install open-creel Zeek systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-zeek.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel Zeek sensor (writes JSON logs to bronze)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/opt/zeek/bin/zeek -i {{ creel_iface }} /etc/open-creel/zeek/open-creel.zeek
+      Restart=always
+      RestartSec=3
+
+      [Install]
+      WantedBy=multi-user.target
+  register: zeek_unit_write

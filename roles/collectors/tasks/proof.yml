@@ -1,0 +1,67 @@
+---
+- name: Generate one outbound request for Zeek logs
+  ansible.builtin.command: curl -fsS https://example.com
+  changed_when: false
+
+- name: Generate one file read for eBPF file access logs
+  ansible.builtin.command: cat /etc/hosts
+  changed_when: false
+
+- name: Wait for conn.log in bronze
+  ansible.builtin.wait_for:
+    path: /var/lib/open-creel/data/bronze/zeek/conn.log
+    timeout: 15
+
+- name: Wait for eBPF bronze logs
+  ansible.builtin.wait_for:
+    path: "{{ item }}"
+    timeout: 15
+  loop:
+    - /var/lib/open-creel/data/bronze/ebpf/exec.log
+    - /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
+    - /var/lib/open-creel/data/bronze/ebpf/connect.log
+
+- name: List bronze Zeek log directory
+  ansible.builtin.command: ls -lah /var/lib/open-creel/data/bronze/zeek
+  register: zeek_ls
+  changed_when: false
+
+- name: List bronze eBPF log directory
+  ansible.builtin.command: ls -lah /var/lib/open-creel/data/bronze/ebpf
+  register: ebpf_ls
+  changed_when: false
+
+- name: Tail latest conn.log line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/zeek/conn.log
+  register: zeek_tail
+  changed_when: false
+
+- name: Tail latest eBPF exec line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/ebpf/exec.log
+  register: ebpf_exec_tail
+  changed_when: false
+
+- name: Tail latest eBPF fileaccess line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
+  register: ebpf_file_tail
+  changed_when: false
+
+- name: Tail latest eBPF connect line
+  ansible.builtin.command: tail -n 1 /var/lib/open-creel/data/bronze/ebpf/connect.log
+  register: ebpf_connect_tail
+  changed_when: false
+
+- name: Print bronze log proof
+  ansible.builtin.debug:
+    msg:
+      - "iface={{ creel_iface }}"
+      - "{{ zeek_ls.stdout }}"
+      - "{{ ebpf_ls.stdout }}"
+      - "last conn.log line:"
+      - "{{ zeek_tail.stdout }}"
+      - "last exec.log line:"
+      - "{{ ebpf_exec_tail.stdout }}"
+      - "last fileaccess.log line:"
+      - "{{ ebpf_file_tail.stdout }}"
+      - "last connect.log line:"
+      - "{{ ebpf_connect_tail.stdout }}"
