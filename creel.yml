@@ -1,0 +1,7 @@
+- name: Provision OpenCreel host
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+  roles:
+    - zeek

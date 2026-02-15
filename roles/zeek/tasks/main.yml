@@ -1,0 +1,24 @@
+---
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Install Zeek repository signing key
+  ansible.builtin.get_url:
+    url: https://download.opensuse.org/repositories/security:/zeek/xUbuntu_24.04/Release.key
+    dest: /etc/apt/keyrings/zeek.asc
+    mode: "0644"
+
+- name: Add Zeek apt repository
+  ansible.builtin.apt_repository:
+    repo: deb [signed-by=/etc/apt/keyrings/zeek.asc] https://download.opensuse.org/repositories/security:/zeek/xUbuntu_24.04/ /
+    filename: zeek
+    state: present
+    update_cache: true
+
+- name: Install Zeek
+  ansible.builtin.apt:
+    name: zeek
+    state: present

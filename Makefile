@@ -3,7 +3,7 @@
 .PHONY: help
 help:
 	@echo "Targets:"
-	@echo "  make infra           Run core system setup (sudo/BEcome prompts)"
+	@echo "  make infra           Run core system setup and install Zeek (sudo/become prompts)"
 
 include common.mk
 
@@ -13,4 +13,3 @@ HOSTNAME := $(shell hostname)
 
 infra:
 	ansible-playbook creel.yml -c local -K
-
