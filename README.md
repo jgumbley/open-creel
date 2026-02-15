@@ -6,5 +6,6 @@ Provisioning in this repo installs OpenCreel (the monitor), not OpenClaw itself.
 Thin slice:
 - Bronze: unmodified Zeek JSON logs under `/var/lib/open-creel/data/bronze/zeek`.
 - Silver: OCSF `network_activity` from `conn.log`, enriched from sibling `dns.log` into `dst_endpoint.hostname` when a DNS answer matches destination IP within TTL.
-- Run: `make silver` (inspect latest record with `make silver-proof`).
-- Databricks-ready interface: `stub_worker.py --bronze-uri <uri> --silver-uri <uri>`.
+- Gold: one OCSF finding rule (`class_uid=2004`, low severity) that fires when newly seen DNS names are not covered by existing names in the same batch.
+- Run Silver: `make silver` (inspect latest record with `make silver-proof`).
+- Run Gold: `make gold` (inspect latest record with `make gold-proof`).
