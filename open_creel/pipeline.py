@@ -161,30 +161,7 @@ AGENT_TREE_CWD_PREFIXES = (
     "/var/lib/open-creel",
 )
 
-UNEXPECTED_CHILD_PROCESS_ALLOWLIST = {
-    "ansible-playbook",
-    "awk",
-    "bash",
-    "cat",
-    "cut",
-    "find",
-    "git",
-    "head",
-    "jq",
-    "ls",
-    "make",
-    "python",
-    "python3",
-    "rg",
-    "sed",
-    "sh",
-    "sort",
-    "tail",
-    "tee",
-    "tr",
-    "uv",
-    "wc",
-}
+DETECTION_RULES_CONFIG_PATH = Path(__file__).with_name("config.json")
 
 SENSITIVE_FILE_PROCESS_ALLOWLIST = {
     "bash",
@@ -204,26 +181,54 @@ SENSITIVE_FILE_PROCESS_ALLOWLIST = {
     "uv",
 }
 
-SENSITIVE_PATH_FRAGMENTS = (
-    "/.env",
-    "/.aws/credentials",
-    "/.git-credentials",
-    "/.kube/config",
-    "/.netrc",
-    "/.npmrc",
-    "/.pypirc",
-    "/.ssh/",
-    "/token",
-    "/tokens",
-    "/secret",
-    "/secrets",
-    "/credential",
-    "/credentials",
-    "/transcript",
-    "/transcripts",
-    "/session",
-    "/sessions",
-)
+@lru_cache(maxsize=1)
+def load_detection_rules() -> tuple[frozenset[str], tuple[str, ...]]:
+    try:
+        raw = json.loads(DETECTION_RULES_CONFIG_PATH.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"{DETECTION_RULES_CONFIG_PATH}: failed to read detection rules") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{DETECTION_RULES_CONFIG_PATH}: invalid JSON ({exc.msg})") from exc
+
+    if not isinstance(raw, dict):
+        raise ValueError(f"{DETECTION_RULES_CONFIG_PATH}: expected JSON object")
+
+    unexpected_child_raw = raw.get("unexpected_child_process_allowlist")
+    if not isinstance(unexpected_child_raw, list):
+        raise ValueError(
+            f"{DETECTION_RULES_CONFIG_PATH}: unexpected_child_process_allowlist must be a list of strings"
+        )
+    unexpected_child_allowlist: set[str] = set()
+    for idx, value in enumerate(unexpected_child_raw):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"{DETECTION_RULES_CONFIG_PATH}: unexpected_child_process_allowlist[{idx}] must be a non-empty string"
+            )
+        unexpected_child_allowlist.add(value.strip().lower())
+
+    sensitive_paths_raw = raw.get("sensitive_path_fragments")
+    if not isinstance(sensitive_paths_raw, list):
+        raise ValueError(f"{DETECTION_RULES_CONFIG_PATH}: sensitive_path_fragments must be a list of strings")
+    sensitive_path_fragments: list[str] = []
+    for idx, value in enumerate(sensitive_paths_raw):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"{DETECTION_RULES_CONFIG_PATH}: sensitive_path_fragments[{idx}] must be a non-empty string"
+            )
+        sensitive_path_fragments.append(value.strip().lower())
+
+    return frozenset(unexpected_child_allowlist), tuple(sensitive_path_fragments)
+
+
+def unexpected_child_process_allowlist() -> frozenset[str]:
+    allowlist, _ = load_detection_rules()
+    return allowlist
+
+
+def sensitive_path_fragments() -> tuple[str, ...]:
+    _, fragments = load_detection_rules()
+    return fragments
+
 
 def resolve_uri(uri: str) -> Path:
     if uri.startswith("dbfs:/"):
@@ -1168,7 +1173,7 @@ def build_unexpected_child_process_findings(
         if not in_agent_tree(observation):
             continue
         process_label = canonical_process_label(observation)
-        if not process_label or process_label in UNEXPECTED_CHILD_PROCESS_ALLOWLIST:
+        if not process_label or process_label in unexpected_child_process_allowlist():
             continue
 
         detection_time_ms = int(observation["ts"] * 1000)
@@ -1200,7 +1205,7 @@ def build_unexpected_child_process_findings(
 
 def is_sensitive_path(path: str) -> bool:
     lowered = path.lower()
-    for fragment in SENSITIVE_PATH_FRAGMENTS:
+    for fragment in sensitive_path_fragments():
         if fragment in lowered:
             return True
     return False
