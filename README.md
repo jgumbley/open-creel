@@ -4,7 +4,11 @@ Sandbox and Local security data lake for openclaw.
 The purpose is developing an approach to the control of permission hungry agents.
 Provisioning in this repo installs OpenCreel (the monitor), and a sandbox with OpenClaw itself.
 
-Current topology after running `make infra`:
+Host prerequisites (assumed, not managed by Ansible in this repo):
+- Node.js
+- npm
+
+Current topology after running `make claw`:
 
 ```text
 host-machine (ubuntu)
@@ -20,13 +24,15 @@ host-machine (ubuntu)
 │   ├── systemd units/scripts installed
 │   │   ├── open-creel-zeek.service
 │   │   ├── open-creel-ebpf-{exec,fileaccess,connect}.service
-│   │   └── open-creel-openclaw-journal.service
+│   │   ├── open-creel-openclaw-journal.service
+│   │   ├── open-creel-claw-bronze-merge.service
+│   │   └── open-creel-gondolin-openclaw.service
 │   └── services enabled + started + restarted
-│       └── active checks passed; proof showed zeek/ebpf data being written
+│       └── active checks passed; proof showed zeek/ebpf/openclaw data being written
 └── gondolin-vm
-    ├── no VM created or modified
-    ├── no OpenClaw-in-Gondolin gateway started
-    └── reason: `make claw` is still a TODO stub
+    ├── Gondolin source is vendored at `vendor/gondolin` (pinned revision)
+    ├── OpenClaw gateway runs in guest with ingress on `http://127.0.0.1:38080/`
+    └── guest telemetry spools to `/var/lib/open-creel/data/spool/gondolin/*` and merges into bronze
 ```
 
 Thin slice:

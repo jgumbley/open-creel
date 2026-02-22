@@ -1,0 +1,198 @@
+---
+- name: Install Gondolin host npm dependencies
+  ansible.builtin.command: npm install
+  args:
+    chdir: "{{ playbook_dir }}/vendor/gondolin/host"
+  become: false
+
+- name: Build Gondolin host CLI
+  ansible.builtin.command: npm run build
+  args:
+    chdir: "{{ playbook_dir }}/vendor/gondolin/host"
+  become: false
+
+- name: Ensure claw runtime script directory exists
+  ansible.builtin.file:
+    path: /usr/local/lib/open-creel
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Gondolin launcher script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/scripts/claw_gondolin_launcher.sh"
+    dest: /usr/local/lib/open-creel/claw_gondolin_launcher.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install claw bronze merger script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/scripts/claw_bronze_merge.sh"
+    dest: /usr/local/lib/open-creel/claw_bronze_merge.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure claw spool directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/lib/open-creel/data/spool/gondolin
+    - /var/lib/open-creel/data/spool/gondolin/openclaw
+    - /var/lib/open-creel/data/spool/gondolin/ebpf
+
+- name: Ensure claw spool OpenClaw stream files exist
+  ansible.builtin.file:
+    path: "/var/lib/open-creel/data/spool/gondolin/openclaw/{{ item }}.log"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - runtime
+    - audit
+    - messages
+    - tool_calls
+    - approvals
+    - skills
+    - auth
+
+- name: Ensure claw spool eBPF stream files exist
+  ansible.builtin.file:
+    path: "/var/lib/open-creel/data/spool/gondolin/ebpf/{{ item }}.log"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - exec
+    - fileaccess
+    - connect
+
+- name: Install claw bronze merge service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-claw-bronze-merge.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel claw guest spool -> bronze merger
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/lib/open-creel/claw_bronze_merge.sh
+      Restart=always
+      RestartSec=3
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Install Gondolin OpenClaw runtime service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-gondolin-openclaw.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel OpenClaw gateway inside Gondolin
+      After=network-online.target open-creel-claw-bronze-merge.service
+      Wants=network-online.target open-creel-claw-bronze-merge.service
+
+      [Service]
+      Type=simple
+      Environment=OPEN_CREEL_REPO={{ playbook_dir }}
+      Environment=OPENCLAW_GATEWAY_HOST={{ claw_gateway_host }}
+      Environment=OPENCLAW_GATEWAY_PORT={{ claw_gateway_port }}
+      WorkingDirectory={{ playbook_dir }}
+      ExecStart=/usr/local/lib/open-creel/claw_gondolin_launcher.sh
+      Restart=always
+      RestartSec=5
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Reload systemd for claw services
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and restart claw bronze merge service
+  ansible.builtin.systemd:
+    name: open-creel-claw-bronze-merge.service
+    enabled: true
+    state: restarted
+
+- name: Enable and restart Gondolin OpenClaw runtime service
+  ansible.builtin.systemd:
+    name: open-creel-gondolin-openclaw.service
+    enabled: true
+    state: restarted
+
+- name: Verify claw bronze merge service is active
+  ansible.builtin.command: systemctl is-active open-creel-claw-bronze-merge.service
+  register: claw_merge_service_active
+  retries: 10
+  delay: 2
+  until: claw_merge_service_active.stdout == "active"
+  changed_when: false
+
+- name: Verify Gondolin OpenClaw runtime service is active
+  ansible.builtin.command: systemctl is-active open-creel-gondolin-openclaw.service
+  register: claw_openclaw_service_active
+  retries: 12
+  delay: 5
+  until: claw_openclaw_service_active.stdout == "active"
+  changed_when: false
+
+- name: Wait for OpenClaw gateway ingress port
+  ansible.builtin.wait_for:
+    host: "{{ claw_gateway_host }}"
+    port: "{{ claw_gateway_port | int }}"
+    timeout: 60
+
+- name: Probe OpenClaw gateway via Gondolin ingress
+  ansible.builtin.command: curl -fsS "http://{{ claw_gateway_host }}:{{ claw_gateway_port }}/"
+  register: claw_gateway_probe
+  retries: 12
+  delay: 5
+  until:
+    - claw_gateway_probe.rc == 0
+    - claw_gateway_probe.stdout is search('"service":"openclaw-gateway"')
+  changed_when: false
+
+- name: Verify merged OpenClaw bronze streams include guest telemetry
+  ansible.builtin.wait_for:
+    path: "/var/lib/open-creel/data/bronze/openclaw/{{ item }}.log"
+    search_regex: '"source":"gondolin-guest"'
+    timeout: 60
+  loop:
+    - runtime
+    - audit
+    - messages
+    - tool_calls
+    - approvals
+    - skills
+    - auth
+
+- name: Verify merged eBPF bronze streams include guest telemetry
+  ansible.builtin.wait_for:
+    path: "/var/lib/open-creel/data/bronze/ebpf/{{ item }}.log"
+    search_regex: '"source":"gondolin-guest"'
+    timeout: 60
+  loop:
+    - exec
+    - fileaccess
+    - connect

@@ -10,7 +10,6 @@
 ## Architectural alignment
 - Align with the existing architecture. Reuse what is here; do not reframe components.
 - Do not add modules (files, packages, services) unless explicitly approved by the operator.
-- The stub worker and spawner are the only additions needed for this milestone, routed through the Makefile.
 
 ## Principles (Prime directives)
 - YAGNI - build only what this stub needs.

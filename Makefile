@@ -5,7 +5,9 @@ help:
 	@echo "Targets:"
 	@echo "  make infra           Run core system setup and install Zeek (sudo/become prompts)"
 	@echo "  make vendor/gondolin Clone Gondolin from GitHub into vendor/gondolin"
-	@echo "  make claw            TODO entrypoint; currently only ensures Gondolin is vendored"
+	@echo "  make claw            Provision baseline infra + Gondolin OpenClaw runtime + bronze proof"
+	@echo "  make claw-check      Syntax-check claw playbooks without sudo"
+	@echo "  make claw-pstree     Start a Gondolin VM, run stub OpenClaw processes, and print guest pstree"
 	@echo "  make restart-openclaw-journal  Restart OpenClaw journal collector service (sudo prompt)"
 	@echo "  make lint            Run Ruff lint checks"
 	@echo "  make typecheck       Run Ty static type checks"
@@ -49,19 +51,45 @@ SILVER_ROOT_URI ?= /tmp/open-creel/data/silver/ocsf
 GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
 PART_NAME ?= part-00000.parquet
 DOMAIN ?=
+GONDOLIN_HOST_DIR ?= vendor/gondolin/host
+GONDOLIN_CLI ?= $(GONDOLIN_HOST_DIR)/dist/bin/gondolin.js
+GONDOLIN_REPO ?= https://github.com/earendil-works/gondolin.git
+CLAW_GATEWAY_HOST ?= 127.0.0.1
+CLAW_GATEWAY_PORT ?= 38080
+CLAW_STUB_SLEEP_SECONDS ?= 60
+ANSIBLE_LOCAL_TEMP ?= /tmp/open-creel-ansible/local
+ANSIBLE_REMOTE_TEMP ?= /tmp/open-creel-ansible/remote
+ANSIBLE_PLAYBOOK = ANSIBLE_LOCAL_TEMP="$(ANSIBLE_LOCAL_TEMP)" ANSIBLE_REMOTE_TEMP="$(ANSIBLE_REMOTE_TEMP)" ansible-playbook
 
-.PHONY: infra claw restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
+.PHONY: infra claw claw-check claw-pstree restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 infra:
-	ansible-playbook creel.yml -c local -K
+	$(ANSIBLE_PLAYBOOK) creel.yml -c local -K
 
-vendor/gondolin:
+vendor/gondolin: vendor
+	git clone "$(GONDOLIN_REPO)" vendor/gondolin
+
+vendor:
 	mkdir -p vendor
-	git clone https://github.com/earendil-works/gondolin.git vendor/gondolin
 
-claw: vendor/gondolin
-	@echo "TODO: implement make claw orchestration."
-	@false
+claw:
+	$(MAKE) vendor/gondolin
+	$(ANSIBLE_PLAYBOOK) claw.yml -c local -K -e "openclaw_gateway_host=$(CLAW_GATEWAY_HOST)" -e "openclaw_gateway_port=$(CLAW_GATEWAY_PORT)"
+	$(MAKE) bronze
+
+claw-check:
+	$(ANSIBLE_PLAYBOOK) --syntax-check claw.yml -c local
+
+lint: claw-check
+
+$(GONDOLIN_HOST_DIR)/node_modules: vendor/gondolin
+	cd "$(GONDOLIN_HOST_DIR)" && npm install
+
+$(GONDOLIN_CLI): $(GONDOLIN_HOST_DIR)/node_modules
+	cd "$(GONDOLIN_HOST_DIR)" && npm run build
+
+claw-pstree: $(GONDOLIN_CLI)
+	cd "$(GONDOLIN_HOST_DIR)" && npm run gondolin -- exec -- /bin/sh -lc 'set -eu; mkdir -p /tmp/openclaw-stubs; printf "%s\n" "#!/bin/sh" "/bin/sleep $(CLAW_STUB_SLEEP_SECONDS)" > /tmp/openclaw-stubs/openclaw-spawner; printf "%s\n" "#!/bin/sh" "/bin/sleep $(CLAW_STUB_SLEEP_SECONDS)" > /tmp/openclaw-stubs/openclaw-worker; chmod +x /tmp/openclaw-stubs/openclaw-spawner /tmp/openclaw-stubs/openclaw-worker; /tmp/openclaw-stubs/openclaw-spawner & /tmp/openclaw-stubs/openclaw-worker & /bin/sleep 1; pstree -p'
 
 restart-openclaw-journal:
 	sudo systemctl restart open-creel-openclaw-journal.service

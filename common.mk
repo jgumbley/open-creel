@@ -19,7 +19,7 @@ endef
 
 digest:
 	@echo "=== Project Digest ==="
-	@for file in $$(find . -path "./.uv-cache" -prune -o -type f \( -name "*.py" -o -name "*.md" -o -name "*.txt" -o -name "Makefile" \) -print | grep -v venv | grep -v __pycache__ | sort); do \
+	@for file in $$(find . -path "./.uv-cache" -prune -o -path "./vendor" -prune -o -type f \( -name "*.py" -o -name "*.md" -o -name "*.txt" -o -name "Makefile" \) -print | grep -v venv | grep -v __pycache__ | sort); do \
 		echo ""; \
 		echo "--- $$file ---"; \
 		cat "$$file"; \

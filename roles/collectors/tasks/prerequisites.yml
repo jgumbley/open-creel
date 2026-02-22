@@ -13,6 +13,7 @@
       - curl
       - gnupg
       - iproute2
+      - qemu-system-x86
     state: present
 
 - name: Create OpenCreel data and config directories

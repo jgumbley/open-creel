@@ -1,5 +1,52 @@
 # NEXT STEP: `make claw` entrypoint
 
+## Status handoff (2026-02-22)
+
+### Implemented so far
+- `make claw` now uses a single Ansible call: `ansible-playbook claw.yml -c local -K ...`.
+- `claw.yml` was added to orchestrate:
+  - `creel.yml`
+  - `gondolin_prereq.yml`
+  - `gondolin_openclaw.yml`
+- New claw automation assets were added:
+  - `gondolin_prereq.yml`
+  - `gondolin_openclaw.yml`
+  - `scripts/claw_gondolin_launcher.sh`
+  - `scripts/claw_bronze_merge.sh`
+- `make claw-check` passes syntax check for `claw.yml`.
+- `make test` passes.
+
+### Latest runtime result
+- Command run: `./pane.sh claw make claw`
+- Result: failed during `gondolin_prereq.yml`.
+- Failing task: `Install Gondolin host runtime dependencies`
+- Failure text:
+  - `apt-get ... install 'npm=9.2.0~ds1-2' failed`
+  - `E: Unable to correct problems, you have held broken packages.`
+  - `npm` dependency chain had multiple unmet `node-*` package requirements.
+
+### Acceptance criteria status
+1. Fresh clone to running system:
+   - `make claw` end-to-end: `FAILED` (blocked by apt/npm package state).
+   - baseline infra before claw-specific orchestration: `PASS` (infra ran first inside `claw.yml`).
+2. OpenClaw in Gondolin:
+   - `NOT REACHED` (play failed before Gondolin/OpenClaw service startup).
+3. Bronze proof (guest-attributed streams):
+   - `NOT REACHED` (guest spool/merge verification is in `gondolin_openclaw.yml`, not executed yet).
+
+### Next agent actions
+1. Fix prerequisite package installation in `gondolin_prereq.yml`:
+   - remove or replace `apt` install of `npm` with a provisioning path that works on this host,
+   - keep `make claw` as single-call orchestration.
+2. Re-run full flow via pane:
+   - `./pane.sh claw make claw`
+3. After success, verify:
+   - `systemctl is-active open-creel-claw-bronze-merge.service`
+   - `systemctl is-active open-creel-gondolin-openclaw.service`
+   - `curl -fsS http://127.0.0.1:38080/`
+   - `make bronze` shows guest-tagged lines (`"source":"gondolin-guest"`) in openclaw and ebpf logs.
+4. If needed, update README/NEXT_STEP acceptance notes after end-to-end pass.
+
 ## Goal
 From a fresh `open-creel` checkout, the operator should run:
 
