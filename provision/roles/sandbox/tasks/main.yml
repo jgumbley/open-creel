@@ -47,7 +47,7 @@
     chdir: "{{ playbook_dir | dirname }}/vendor/gondolin/host"
   become: false
 
-- name: Install Gondolin sandbox baseline service
+- name: Install Gondolin sandbox lifecycle service
   ansible.builtin.copy:
     dest: /etc/systemd/system/open-creel-gondolin-sandbox.service
     owner: root
@@ -55,14 +55,14 @@
     mode: "0644"
     content: |
       [Unit]
-      Description=open-creel Gondolin sandbox baseline
+      Description=open-creel Gondolin sandbox lifecycle
       After=network-online.target
       Wants=network-online.target
 
       [Service]
       Type=simple
       WorkingDirectory={{ playbook_dir | dirname }}/vendor/gondolin/host
-      ExecStart=node {{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js bash --listen {{ sandbox_gateway_host }}:{{ sandbox_gateway_port | int }} --mount-hostfs /var/lib/open-creel/data/spool/gondolin:/spool --mount-hostfs {{ playbook_dir | dirname }}:/workspace -- /bin/sh -lc 'set -euo pipefail; echo "/ :18080" > /etc/gondolin/listeners; exec node -e "require(\"http\").createServer((req,res)=>{res.writeHead(200,{\"content-type\":\"text/plain\"});res.end(\"sandbox-ok\\n\");}).listen(18080,\"127.0.0.1\")"'
+      ExecStart=node {{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js bash --mount-hostfs /var/lib/open-creel/data/spool/gondolin:/spool --mount-hostfs {{ playbook_dir | dirname }}:/workspace -- /bin/sh -lc 'set -euo pipefail; exec tail -f /dev/null'
       Restart=always
       RestartSec=5
       StandardOutput=journal
@@ -89,18 +89,3 @@
   delay: 5
   until: gondolin_sandbox_service_active.stdout == "active"
   changed_when: false
-
-- name: Wait for Gondolin sandbox ingress port
-  ansible.builtin.wait_for:
-    host: "{{ sandbox_gateway_host }}"
-    port: "{{ sandbox_gateway_port | int }}"
-    timeout: 60
-
-- name: Probe Gondolin sandbox ingress
-  ansible.builtin.uri:
-    url: "http://{{ sandbox_gateway_host }}:{{ sandbox_gateway_port | int }}/"
-    status_code: 200
-  register: gondolin_sandbox_probe
-  retries: 12
-  delay: 5
-  until: gondolin_sandbox_probe.status == 200

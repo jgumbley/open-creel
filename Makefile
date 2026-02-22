@@ -3,7 +3,7 @@
 .PHONY: help
 help:
 	@echo "Targets:"
-	@echo "  make sandbox         Provision Layer 1: Gondolin sandbox VM lifecycle and ingress proof (sudo/become prompts)"
+	@echo "  make sandbox         Provision Layer 1: Gondolin sandbox VM lifecycle for guest sessions (sudo/become prompts)"
 	@echo "  make openclaw        Provision Layer 2: OpenClaw runtime checks and gateway probe inside guest (no sudo expected)"
 	@echo "  make telemetry       Provision Layer 3: Zeek + eBPF + journal + bronze merge services (sudo/become prompts)"
 	@echo "  make provision       Provision Layers 1-3 in order: sandbox + openclaw + telemetry"
@@ -52,9 +52,6 @@ SILVER_ROOT_URI ?= /tmp/open-creel/data/silver/ocsf
 GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
 PART_NAME ?= part-00000.parquet
 DOMAIN ?=
-GONDOLIN_REPO ?= https://github.com/earendil-works/gondolin.git
-SANDBOX_GATEWAY_HOST ?= 127.0.0.1
-SANDBOX_GATEWAY_PORT ?= 38070
 CLAW_GATEWAY_HOST ?= 127.0.0.1
 CLAW_GATEWAY_PORT ?= 38080
 ANSIBLE_LOCAL_TEMP ?= /tmp/open-creel-ansible/local
@@ -64,7 +61,7 @@ ANSIBLE_PLAYBOOK = ANSIBLE_LOCAL_TEMP="$(ANSIBLE_LOCAL_TEMP)" ANSIBLE_REMOTE_TEM
 .PHONY: infra sandbox openclaw telemetry provision restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 sandbox:
-	$(ANSIBLE_PLAYBOOK) provision/sandbox.yml -c local -K -e "gondolin_repo_url=$(GONDOLIN_REPO)" -e "gondolin_sandbox_host=$(SANDBOX_GATEWAY_HOST)" -e "gondolin_sandbox_port=$(SANDBOX_GATEWAY_PORT)"
+	$(ANSIBLE_PLAYBOOK) provision/sandbox.yml -c local -K
 	$(call success)
 
 openclaw:

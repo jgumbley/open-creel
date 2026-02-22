@@ -8,7 +8,7 @@ Host prerequisites (assumed, not managed by Ansible in this repo):
 - npm
 
 Provisioning layers:
-- Layer 1 (`make sandbox`): Gondolin VM lifecycle and ingress proof.
+- Layer 1 (`make sandbox`): Gondolin VM lifecycle for guest sessions.
 - Layer 2 (`make openclaw`): OpenClaw runtime and gateway inside Gondolin.
 - Layer 3 (`make telemetry`): Zeek, eBPF, OpenClaw journal collector, and Gondolin spool-to-bronze merge services.
 - Layer 4 (`make silver`, `make gold`): Python bronze -> silver/gold transforms.
@@ -27,7 +27,7 @@ host-machine (ubuntu)
 │   ├── Gondolin source in `vendor/gondolin`
 │   └── open-creel-gondolin-sandbox.service
 ├── layer 2 openclaw
-│   └── open-creel-gondolin-openclaw.service
+│   └── ad hoc `gondolin.js` guest sessions for dependency checks and gateway probes
 └── layer 3 telemetry
     ├── open-creel-zeek.service
     ├── open-creel-ebpf-{exec,fileaccess,connect}.service
