@@ -25,9 +25,10 @@ Current topology after running `make provision`:
 host-machine (ubuntu)
 ├── layer 1 sandbox
 │   ├── Gondolin source in `vendor/gondolin`
-│   └── open-creel-gondolin-sandbox.service
+│   ├── open-creel-gondolin-sandbox.service (starts guest with SSH enabled)
+│   └── generated `provision/gondolin_inventory` + `provision/gondolin_ssh_key` for Ansible guest access
 ├── layer 2 openclaw
-│   └── ad hoc `gondolin.js` guest sessions for dependency checks and gateway probes
+│   └── Ansible `-c ssh` tasks running directly inside the Gondolin guest
 └── layer 3 telemetry
     ├── open-creel-zeek.service
     ├── open-creel-ebpf-{exec,fileaccess,connect}.service

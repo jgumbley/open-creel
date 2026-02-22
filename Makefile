@@ -3,8 +3,8 @@
 .PHONY: help
 help:
 	@echo "Targets:"
-	@echo "  make sandbox         Provision Layer 1: Gondolin sandbox VM lifecycle for guest sessions (sudo/become prompts)"
-	@echo "  make openclaw        Provision Layer 2: OpenClaw runtime checks and gateway probe inside guest (no sudo expected)"
+	@echo "  make sandbox         Provision Layer 1: Gondolin sandbox VM lifecycle + guest SSH inventory generation (sudo/become prompts)"
+	@echo "  make openclaw        Provision Layer 2: OpenClaw runtime checks and gateway probe inside guest over SSH (no sudo expected)"
 	@echo "  make telemetry       Provision Layer 3: Zeek + eBPF + journal + bronze merge services (sudo/become prompts)"
 	@echo "  make provision       Provision Layers 1-3 in order: sandbox + openclaw + telemetry"
 	@echo "  make infra           Backward-compatible alias for make telemetry"
@@ -54,6 +54,8 @@ PART_NAME ?= part-00000.parquet
 DOMAIN ?=
 CLAW_GATEWAY_HOST ?= 127.0.0.1
 CLAW_GATEWAY_PORT ?= 38080
+GONDOLIN_SSH_PORT ?= 3222
+GONDOLIN_INVENTORY ?= provision/gondolin_inventory
 ANSIBLE_LOCAL_TEMP ?= /tmp/open-creel-ansible/local
 ANSIBLE_REMOTE_TEMP ?= /tmp/open-creel-ansible/remote
 ANSIBLE_PLAYBOOK = ANSIBLE_LOCAL_TEMP="$(ANSIBLE_LOCAL_TEMP)" ANSIBLE_REMOTE_TEMP="$(ANSIBLE_REMOTE_TEMP)" ansible-playbook
@@ -61,11 +63,12 @@ ANSIBLE_PLAYBOOK = ANSIBLE_LOCAL_TEMP="$(ANSIBLE_LOCAL_TEMP)" ANSIBLE_REMOTE_TEM
 .PHONY: infra sandbox openclaw telemetry provision restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 sandbox:
-	$(ANSIBLE_PLAYBOOK) provision/sandbox.yml -c local -K
+	$(ANSIBLE_PLAYBOOK) provision/sandbox.yml -c local -K -e "gondolin_ssh_port=$(GONDOLIN_SSH_PORT)"
 	$(call success)
 
 openclaw:
-	$(ANSIBLE_PLAYBOOK) provision/openclaw.yml -c local -e "openclaw_gateway_host=$(CLAW_GATEWAY_HOST)" -e "openclaw_gateway_port=$(CLAW_GATEWAY_PORT)"
+	@test -f "$(GONDOLIN_INVENTORY)" || (echo "missing $(GONDOLIN_INVENTORY); run make sandbox first" >&2; exit 1)
+	$(ANSIBLE_PLAYBOOK) provision/openclaw.yml -c ssh -i "$(GONDOLIN_INVENTORY)" -e "openclaw_gateway_host=$(CLAW_GATEWAY_HOST)" -e "openclaw_gateway_port=$(CLAW_GATEWAY_PORT)"
 	$(call success)
 
 telemetry: openclaw

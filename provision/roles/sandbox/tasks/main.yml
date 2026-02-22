@@ -33,6 +33,7 @@
     repo: "{{ gondolin_repo }}"
     dest: "{{ playbook_dir | dirname }}/vendor/gondolin"
     update: true
+    force: true
   become: false
 
 - name: Install Gondolin host npm dependencies
@@ -62,7 +63,7 @@
       [Service]
       Type=simple
       WorkingDirectory={{ playbook_dir | dirname }}/vendor/gondolin/host
-      ExecStart=node {{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js bash --mount-hostfs /var/lib/open-creel/data/spool/gondolin:/spool --mount-hostfs {{ playbook_dir | dirname }}:/workspace -- /bin/sh -lc 'set -euo pipefail; exec tail -f /dev/null'
+      ExecStart=node {{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js bash --ssh --ssh-user root --ssh-listen 127.0.0.1 --ssh-port {{ gondolin_ssh_port | default(3222) | int }} --mount-hostfs /var/lib/open-creel/data/spool/gondolin:/spool --mount-hostfs {{ playbook_dir | dirname }}:/workspace -- /bin/sh -lc 'set -euo pipefail; exec tail -f /dev/null'
       Restart=always
       RestartSec=5
       StandardOutput=journal
@@ -89,3 +90,60 @@
   delay: 5
   until: gondolin_sandbox_service_active.stdout == "active"
   changed_when: false
+
+- name: Read Gondolin sandbox service invocation id
+  ansible.builtin.command: systemctl show -p InvocationID --value open-creel-gondolin-sandbox.service
+  register: gondolin_sandbox_invocation_id
+  changed_when: false
+  failed_when: gondolin_sandbox_invocation_id.stdout | trim == ""
+
+- name: Read Gondolin SSH access command from sandbox service logs
+  ansible.builtin.command:
+    argv:
+      - journalctl
+      - "_SYSTEMD_INVOCATION_ID={{ gondolin_sandbox_invocation_id.stdout | trim }}"
+      - -n
+      - "200"
+      - --no-pager
+      - -o
+      - cat
+  register: gondolin_sandbox_logs
+  retries: 30
+  delay: 2
+  until: "'SSH enabled: ssh ' in gondolin_sandbox_logs.stdout"
+  changed_when: false
+
+- name: Extract Gondolin SSH command from service logs
+  ansible.builtin.set_fact:
+    gondolin_ssh_command: >-
+      {{
+        gondolin_sandbox_logs.stdout_lines
+        | select('search', '^SSH enabled: ssh ')
+        | list
+        | last
+        | regex_replace('^SSH enabled: ', '')
+      }}
+
+- name: Extract Gondolin SSH identity path and user from SSH command
+  ansible.builtin.set_fact:
+    gondolin_ssh_identity_path: "{{ gondolin_ssh_command.split(' ')[4] }}"
+    gondolin_ssh_user: "{{ gondolin_ssh_command.split(' ') | last | split('@') | first }}"
+
+- name: Copy Gondolin SSH identity for Ansible guest access
+  ansible.builtin.copy:
+    src: "{{ gondolin_ssh_identity_path }}"
+    dest: "{{ playbook_dir }}/gondolin_ssh_key"
+    remote_src: true
+    owner: "{{ lookup('env', 'USER') }}"
+    group: "{{ lookup('env', 'USER') }}"
+    mode: "0600"
+
+- name: Write Gondolin Ansible inventory for guest SSH provisioning
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/gondolin_inventory"
+    owner: "{{ lookup('env', 'USER') }}"
+    group: "{{ lookup('env', 'USER') }}"
+    mode: "0644"
+    content: |
+      [gondolin]
+      gondolin ansible_host=127.0.0.1 ansible_port={{ gondolin_ssh_port | default(3222) | int }} ansible_user={{ gondolin_ssh_user }} ansible_ssh_private_key_file={{ playbook_dir }}/gondolin_ssh_key ansible_ssh_common_args='-o ForwardAgent=no -o ClearAllForwardings=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'

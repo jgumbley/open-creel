@@ -1,6 +1,5 @@
 - name: Provision OpenClaw layer
-  hosts: localhost
-  connection: local
+  hosts: gondolin
   become: false
   gather_facts: true
   vars:

@@ -1,64 +1,64 @@
 ---
-- name: Verify Gondolin sandbox service is active before OpenClaw checks
-  ansible.builtin.command: systemctl is-active open-creel-gondolin-sandbox.service
-  register: sandbox_service_active
-  retries: 12
-  delay: 5
-  until: sandbox_service_active.stdout == "active"
-  changed_when: false
-
-- name: Verify OpenClaw dependencies inside a guest session
+- name: Verify Node and npm dependencies inside Gondolin guest
   ansible.builtin.command:
     argv:
-      - node
-      - "{{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js"
-      - exec
-      - --
       - /bin/sh
       - -lc
-      - "set -euo pipefail; command -v node; command -v npm; command -v openclaw; openclaw --version"
-  become: false
+      - "set -euo pipefail; command -v node; node --version; command -v npm; npm --version"
   changed_when: false
 
-- name: Start temporary OpenClaw gateway session for ingress probe
+- name: Ensure guest cache directory exists for OpenClaw install
+  ansible.builtin.file:
+    path: /opt/openclaw-cache
+    state: directory
+    mode: "0755"
+
+- name: Install OpenClaw CLI inside Gondolin guest
   ansible.builtin.command:
     argv:
-      - timeout
-      - "45"
-      - node
-      - "{{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js"
-      - bash
-      - --allow-host
-      - "*.npmjs.org"
-      - --listen
-      - "{{ claw_gateway_host }}:{{ claw_gateway_port | int }}"
-      - --
       - /bin/sh
       - -lc
-      - "set -euo pipefail; mkdir -p /tmp/openclaw/home; echo '/ :18789' > /etc/gondolin/listeners; exec env OPENCLAW_HOME=/tmp/openclaw/home openclaw gateway --allow-unconfigured --dev --port 18789 --verbose"
+      - "set -euo pipefail; export NPM_CONFIG_PREFIX=/opt/openclaw-cache/prefix; export PATH=$NPM_CONFIG_PREFIX/bin:$PATH; npm install -g openclaw@latest; command -v openclaw; openclaw --version"
+
+- name: Start temporary OpenClaw gateway session for in-guest probe
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -lc
+      - "set -euo pipefail; export NPM_CONFIG_PREFIX=/opt/openclaw-cache/prefix; export PATH=$NPM_CONFIG_PREFIX/bin:$PATH; command -v openclaw; openclaw --version; mkdir -p /tmp/openclaw/home; exec timeout 300 env OPENCLAW_HOME=/tmp/openclaw/home openclaw gateway --allow-unconfigured --dev --port {{ claw_gateway_port | int }} --verbose"
   register: openclaw_gateway_session
-  async: 60
+  async: 360
   poll: 0
 
-- name: Wait for OpenClaw gateway ingress port
+- name: Wait for OpenClaw gateway port inside guest
   ansible.builtin.wait_for:
     host: "{{ claw_gateway_host }}"
     port: "{{ claw_gateway_port | int }}"
-    timeout: 30
+    timeout: 120
 
-- name: Probe OpenClaw gateway ingress
+- name: Probe OpenClaw gateway inside guest
   ansible.builtin.uri:
     url: "http://{{ claw_gateway_host }}:{{ claw_gateway_port | int }}/"
     status_code: 200
   register: openclaw_gateway_probe
-  retries: 10
+  retries: 90
   delay: 2
   until: openclaw_gateway_probe.status == 200
+
+- name: Stop temporary OpenClaw gateway session
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -lc
+      - "pkill -f 'openclaw gateway --allow-unconfigured --dev --port {{ claw_gateway_port | int }}'"
+  register: openclaw_gateway_stop
+  changed_when: openclaw_gateway_stop.rc == 0
+  failed_when: openclaw_gateway_stop.rc not in [0, 1]
 
 - name: Wait for temporary gateway session to exit
   ansible.builtin.async_status:
     jid: "{{ openclaw_gateway_session.ansible_job_id }}"
   register: openclaw_gateway_session_status
-  retries: 30
+  retries: 180
   delay: 2
   until: openclaw_gateway_session_status.finished
