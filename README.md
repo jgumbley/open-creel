@@ -8,6 +8,11 @@ Host prerequisites (assumed, not managed by Ansible in this repo):
 - Node.js
 - npm
 
+Provisioning layout:
+- `provision/creel.yml` and `provision/claw.yml` playbooks
+- `provision/roles/` Ansible roles
+- `provision/scripts/` provisioning helper scripts
+
 Current topology after running `make claw`:
 
 ```text

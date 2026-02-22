@@ -2,13 +2,13 @@
 - name: Install Gondolin host npm dependencies
   ansible.builtin.command: npm install
   args:
-    chdir: "{{ playbook_dir }}/vendor/gondolin/host"
+    chdir: "{{ playbook_dir | dirname }}/vendor/gondolin/host"
   become: false
 
 - name: Build Gondolin host CLI
   ansible.builtin.command: npm run build
   args:
-    chdir: "{{ playbook_dir }}/vendor/gondolin/host"
+    chdir: "{{ playbook_dir | dirname }}/vendor/gondolin/host"
   become: false
 
 - name: Ensure claw runtime script directory exists
@@ -112,10 +112,10 @@
 
       [Service]
       Type=simple
-      Environment=OPEN_CREEL_REPO={{ playbook_dir }}
+      Environment=OPEN_CREEL_REPO={{ playbook_dir | dirname }}
       Environment=OPENCLAW_GATEWAY_HOST={{ claw_gateway_host }}
       Environment=OPENCLAW_GATEWAY_PORT={{ claw_gateway_port }}
-      WorkingDirectory={{ playbook_dir }}
+      WorkingDirectory={{ playbook_dir | dirname }}
       ExecStart=/usr/local/lib/open-creel/claw_gondolin_launcher.sh
       Restart=always
       RestartSec=5

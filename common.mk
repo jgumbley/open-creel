@@ -31,6 +31,7 @@ ingest:
 	$(call success)
 
 lint: .venv/
+	$(ANSIBLE_PLAYBOOK) --syntax-check provision/claw.yml -c local
 	$(PYTHON) -m ruff check open_creel tests
 	$(call success)
 
