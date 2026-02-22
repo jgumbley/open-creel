@@ -31,7 +31,9 @@ ingest:
 	$(call success)
 
 lint: .venv/
-	$(ANSIBLE_PLAYBOOK) --syntax-check provision/claw.yml -c local
+	$(ANSIBLE_PLAYBOOK) --syntax-check provision/sandbox.yml -c local
+	$(ANSIBLE_PLAYBOOK) --syntax-check provision/openclaw.yml -c local
+	$(ANSIBLE_PLAYBOOK) --syntax-check provision/telemetry.yml -c local
 	$(PYTHON) -m ruff check open_creel tests
 	$(call success)
 

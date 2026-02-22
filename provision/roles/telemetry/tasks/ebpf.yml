@@ -11,20 +11,6 @@
     - /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
     - /var/lib/open-creel/data/bronze/ebpf/connect.log
 
-- name: Remove non-JSON lines from eBPF bronze logs
-  ansible.builtin.shell: |
-    set -euo pipefail
-    tmp_file="$(mktemp)"
-    awk '/^[[:space:]]*\{/{print}' "{{ item }}" > "${tmp_file}"
-    install -o root -g root -m 0644 "${tmp_file}" "{{ item }}"
-    rm -f "${tmp_file}"
-  args:
-    executable: /bin/bash
-  loop:
-    - /var/lib/open-creel/data/bronze/ebpf/exec.log
-    - /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
-    - /var/lib/open-creel/data/bronze/ebpf/connect.log
-
 - name: Write eBPF exec trace script
   ansible.builtin.copy:
     dest: /etc/open-creel/ebpf/exec.bt

@@ -1,0 +1,106 @@
+---
+- name: Ensure sandbox host prerequisites are installed
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - qemu-system-x86
+    state: present
+
+- name: Ensure Gondolin spool directories exist on host
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/lib/open-creel/data/spool
+    - /var/lib/open-creel/data/spool/gondolin
+    - /var/lib/open-creel/data/spool/gondolin/openclaw
+    - /var/lib/open-creel/data/spool/gondolin/ebpf
+
+- name: Ensure vendor directory exists
+  ansible.builtin.file:
+    path: "{{ playbook_dir | dirname }}/vendor"
+    state: directory
+    mode: "0755"
+  become: false
+
+- name: Clone or update Gondolin source
+  ansible.builtin.git:
+    repo: "{{ gondolin_repo }}"
+    dest: "{{ playbook_dir | dirname }}/vendor/gondolin"
+    update: true
+  become: false
+
+- name: Install Gondolin host npm dependencies
+  ansible.builtin.command: npm install
+  args:
+    chdir: "{{ playbook_dir | dirname }}/vendor/gondolin/host"
+  become: false
+
+- name: Build Gondolin host CLI
+  ansible.builtin.command: npm run build
+  args:
+    chdir: "{{ playbook_dir | dirname }}/vendor/gondolin/host"
+  become: false
+
+- name: Install Gondolin sandbox baseline service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-gondolin-sandbox.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel Gondolin sandbox baseline
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      WorkingDirectory={{ playbook_dir | dirname }}/vendor/gondolin/host
+      ExecStart=node {{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js bash --listen {{ sandbox_gateway_host }}:{{ sandbox_gateway_port | int }} --mount-hostfs /var/lib/open-creel/data/spool/gondolin:/spool --mount-hostfs {{ playbook_dir | dirname }}:/workspace -- /bin/sh -lc 'set -euo pipefail; echo "/ :18080" > /etc/gondolin/listeners; exec node -e "require(\"http\").createServer((req,res)=>{res.writeHead(200,{\"content-type\":\"text/plain\"});res.end(\"sandbox-ok\\n\");}).listen(18080,\"127.0.0.1\")"'
+      Restart=always
+      RestartSec=5
+      StandardOutput=journal
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+  register: gondolin_sandbox_unit_write
+
+- name: Reload systemd for sandbox service
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and restart Gondolin sandbox service
+  ansible.builtin.systemd:
+    name: open-creel-gondolin-sandbox.service
+    enabled: true
+    state: restarted
+
+- name: Verify Gondolin sandbox service is active
+  ansible.builtin.command: systemctl is-active open-creel-gondolin-sandbox.service
+  register: gondolin_sandbox_service_active
+  retries: 12
+  delay: 5
+  until: gondolin_sandbox_service_active.stdout == "active"
+  changed_when: false
+
+- name: Wait for Gondolin sandbox ingress port
+  ansible.builtin.wait_for:
+    host: "{{ sandbox_gateway_host }}"
+    port: "{{ sandbox_gateway_port | int }}"
+    timeout: 60
+
+- name: Probe Gondolin sandbox ingress
+  ansible.builtin.uri:
+    url: "http://{{ sandbox_gateway_host }}:{{ sandbox_gateway_port | int }}/"
+    status_code: 200
+  register: gondolin_sandbox_probe
+  retries: 12
+  delay: 5
+  until: gondolin_sandbox_probe.status == 200

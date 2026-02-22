@@ -1,0 +1,64 @@
+---
+- name: Verify Gondolin sandbox service is active before OpenClaw checks
+  ansible.builtin.command: systemctl is-active open-creel-gondolin-sandbox.service
+  register: sandbox_service_active
+  retries: 12
+  delay: 5
+  until: sandbox_service_active.stdout == "active"
+  changed_when: false
+
+- name: Verify OpenClaw dependencies inside a guest session
+  ansible.builtin.command:
+    argv:
+      - node
+      - "{{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js"
+      - exec
+      - --
+      - /bin/sh
+      - -lc
+      - "set -euo pipefail; command -v node; command -v npm; command -v openclaw; openclaw --version"
+  become: false
+  changed_when: false
+
+- name: Start temporary OpenClaw gateway session for ingress probe
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "45"
+      - node
+      - "{{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js"
+      - bash
+      - --allow-host
+      - "*.npmjs.org"
+      - --listen
+      - "{{ claw_gateway_host }}:{{ claw_gateway_port | int }}"
+      - --
+      - /bin/sh
+      - -lc
+      - "set -euo pipefail; mkdir -p /tmp/openclaw/home; echo '/ :18789' > /etc/gondolin/listeners; exec env OPENCLAW_HOME=/tmp/openclaw/home openclaw gateway --allow-unconfigured --dev --port 18789 --verbose"
+  register: openclaw_gateway_session
+  async: 60
+  poll: 0
+
+- name: Wait for OpenClaw gateway ingress port
+  ansible.builtin.wait_for:
+    host: "{{ claw_gateway_host }}"
+    port: "{{ claw_gateway_port | int }}"
+    timeout: 30
+
+- name: Probe OpenClaw gateway ingress
+  ansible.builtin.uri:
+    url: "http://{{ claw_gateway_host }}:{{ claw_gateway_port | int }}/"
+    status_code: 200
+  register: openclaw_gateway_probe
+  retries: 10
+  delay: 2
+  until: openclaw_gateway_probe.status == 200
+
+- name: Wait for temporary gateway session to exit
+  ansible.builtin.async_status:
+    jid: "{{ openclaw_gateway_session.ansible_job_id }}"
+  register: openclaw_gateway_session_status
+  retries: 30
+  delay: 2
+  until: openclaw_gateway_session_status.finished

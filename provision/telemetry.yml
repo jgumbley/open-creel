@@ -1,4 +1,4 @@
-- name: Provision OpenCreel telemetry host services
+- name: Provision telemetry layer
   hosts: localhost
   connection: local
   become: true

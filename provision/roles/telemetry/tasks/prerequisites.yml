@@ -5,7 +5,7 @@
     state: directory
     mode: "0755"
 
-- name: Install base dependencies for runtime
+- name: Install telemetry host dependencies
   ansible.builtin.apt:
     name:
       - bpftrace
@@ -13,7 +13,6 @@
       - curl
       - gnupg
       - iproute2
-      - qemu-system-x86
     state: present
 
 - name: Create OpenCreel data and config directories

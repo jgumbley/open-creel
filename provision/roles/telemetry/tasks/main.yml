@@ -1,0 +1,256 @@
+---
+- name: Include telemetry prerequisites
+  ansible.builtin.import_tasks: prerequisites.yml
+
+- name: Include Zeek collector tasks
+  ansible.builtin.import_tasks: zeek.yml
+
+- name: Include eBPF collector tasks
+  ansible.builtin.import_tasks: ebpf.yml
+
+- name: Ensure OpenClaw bronze logs exist without truncation
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /var/lib/open-creel/data/bronze/openclaw/runtime.log
+    - /var/lib/open-creel/data/bronze/openclaw/audit.log
+    - /var/lib/open-creel/data/bronze/openclaw/messages.log
+    - /var/lib/open-creel/data/bronze/openclaw/tool_calls.log
+    - /var/lib/open-creel/data/bronze/openclaw/approvals.log
+    - /var/lib/open-creel/data/bronze/openclaw/skills.log
+    - /var/lib/open-creel/data/bronze/openclaw/auth.log
+
+- name: Ensure Gondolin spool directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/lib/open-creel/data/spool/gondolin
+    - /var/lib/open-creel/data/spool/gondolin/openclaw
+    - /var/lib/open-creel/data/spool/gondolin/ebpf
+
+- name: Ensure Gondolin spool OpenClaw stream files exist
+  ansible.builtin.file:
+    path: "/var/lib/open-creel/data/spool/gondolin/openclaw/{{ item }}.log"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - runtime
+    - audit
+    - messages
+    - tool_calls
+    - approvals
+    - skills
+    - auth
+
+- name: Ensure Gondolin spool eBPF stream files exist
+  ansible.builtin.file:
+    path: "/var/lib/open-creel/data/spool/gondolin/ebpf/{{ item }}.log"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - exec
+    - fileaccess
+    - connect
+
+- name: Define Gondolin spool to bronze stream mapping
+  ansible.builtin.set_fact:
+    gondolin_merge_streams:
+      - name: openclaw-runtime
+        source: /var/lib/open-creel/data/spool/gondolin/openclaw/runtime.log
+        destination: /var/lib/open-creel/data/bronze/openclaw/runtime.log
+      - name: openclaw-audit
+        source: /var/lib/open-creel/data/spool/gondolin/openclaw/audit.log
+        destination: /var/lib/open-creel/data/bronze/openclaw/audit.log
+      - name: openclaw-messages
+        source: /var/lib/open-creel/data/spool/gondolin/openclaw/messages.log
+        destination: /var/lib/open-creel/data/bronze/openclaw/messages.log
+      - name: openclaw-tool-calls
+        source: /var/lib/open-creel/data/spool/gondolin/openclaw/tool_calls.log
+        destination: /var/lib/open-creel/data/bronze/openclaw/tool_calls.log
+      - name: openclaw-approvals
+        source: /var/lib/open-creel/data/spool/gondolin/openclaw/approvals.log
+        destination: /var/lib/open-creel/data/bronze/openclaw/approvals.log
+      - name: openclaw-skills
+        source: /var/lib/open-creel/data/spool/gondolin/openclaw/skills.log
+        destination: /var/lib/open-creel/data/bronze/openclaw/skills.log
+      - name: openclaw-auth
+        source: /var/lib/open-creel/data/spool/gondolin/openclaw/auth.log
+        destination: /var/lib/open-creel/data/bronze/openclaw/auth.log
+      - name: ebpf-exec
+        source: /var/lib/open-creel/data/spool/gondolin/ebpf/exec.log
+        destination: /var/lib/open-creel/data/bronze/ebpf/exec.log
+      - name: ebpf-fileaccess
+        source: /var/lib/open-creel/data/spool/gondolin/ebpf/fileaccess.log
+        destination: /var/lib/open-creel/data/bronze/ebpf/fileaccess.log
+      - name: ebpf-connect
+        source: /var/lib/open-creel/data/spool/gondolin/ebpf/connect.log
+        destination: /var/lib/open-creel/data/bronze/ebpf/connect.log
+
+- name: Install OpenClaw journal collector unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/open-creel-openclaw-journal.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel OpenClaw journal collector
+      After=network-online.target systemd-journald.service open-creel-gondolin-openclaw.service
+      Wants=network-online.target open-creel-gondolin-openclaw.service
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/bin/journalctl -f -n 0 -o json --output-fields=__REALTIME_TIMESTAMP,_HOSTNAME,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,PRIORITY,MESSAGE -u open-creel-gondolin-openclaw.service
+      Restart=always
+      RestartSec=3
+      StandardOutput=append:/var/lib/open-creel/data/bronze/openclaw/runtime.log
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+  register: openclaw_journal_unit_write
+
+- name: Install Gondolin spool merge units
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/open-creel-claw-merge-{{ item.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=open-creel merge {{ item.name }} stream into bronze
+      After=network-online.target open-creel-gondolin-openclaw.service
+      Wants=network-online.target open-creel-gondolin-openclaw.service
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/bin/tail -n 0 -F {{ item.source }}
+      Restart=always
+      RestartSec=3
+      StandardOutput=append:{{ item.destination }}
+      StandardError=journal
+
+      [Install]
+      WantedBy=multi-user.target
+  loop: "{{ gondolin_merge_streams }}"
+  register: gondolin_merge_unit_write
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start open-creel Zeek service
+  ansible.builtin.systemd:
+    name: open-creel-zeek.service
+    enabled: true
+    state: started
+
+- name: Enable and start open-creel eBPF services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - open-creel-ebpf-exec.service
+    - open-creel-ebpf-fileaccess.service
+    - open-creel-ebpf-connect.service
+
+- name: Enable and start open-creel OpenClaw journal service
+  ansible.builtin.systemd:
+    name: open-creel-openclaw-journal.service
+    enabled: true
+    state: started
+
+- name: Enable and restart Gondolin spool merge services
+  ansible.builtin.systemd:
+    name: "open-creel-claw-merge-{{ item.name }}.service"
+    enabled: true
+    state: restarted
+  loop: "{{ gondolin_merge_streams }}"
+
+- name: Restart open-creel Zeek service when unit or script changes
+  ansible.builtin.systemd:
+    name: open-creel-zeek.service
+    state: restarted
+  when: zeek_script_write.changed or zeek_unit_write.changed
+
+- name: Restart open-creel eBPF services when unit or script changes
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - open-creel-ebpf-exec.service
+    - open-creel-ebpf-fileaccess.service
+    - open-creel-ebpf-connect.service
+  when: >
+    ebpf_exec_script_write.changed or
+    ebpf_file_script_write.changed or
+    ebpf_connect_script_write.changed or
+    ebpf_exec_unit_write.changed or
+    ebpf_file_unit_write.changed or
+    ebpf_connect_unit_write.changed
+
+- name: Restart open-creel OpenClaw journal service when unit changes
+  ansible.builtin.systemd:
+    name: open-creel-openclaw-journal.service
+    state: restarted
+  when: openclaw_journal_unit_write.changed
+
+- name: Restart Gondolin spool merge services when unit changes
+  ansible.builtin.systemd:
+    name: "open-creel-claw-merge-{{ item.item.name }}.service"
+    state: restarted
+  loop: "{{ gondolin_merge_unit_write.results }}"
+  when: item.changed
+
+- name: Verify open-creel Zeek service is active
+  ansible.builtin.command: systemctl is-active open-creel-zeek.service
+  register: zeek_service_active
+  retries: 10
+  delay: 2
+  until: zeek_service_active.stdout == "active"
+  changed_when: false
+
+- name: Verify open-creel eBPF services are active
+  ansible.builtin.command: systemctl is-active "{{ item }}"
+  register: ebpf_service_active
+  retries: 10
+  delay: 2
+  until: ebpf_service_active.stdout == "active"
+  changed_when: false
+  loop:
+    - open-creel-ebpf-exec.service
+    - open-creel-ebpf-fileaccess.service
+    - open-creel-ebpf-connect.service
+
+- name: Verify open-creel OpenClaw journal service is active
+  ansible.builtin.command: systemctl is-active open-creel-openclaw-journal.service
+  register: openclaw_journal_service_active
+  retries: 10
+  delay: 2
+  until: openclaw_journal_service_active.stdout == "active"
+  changed_when: false
+
+- name: Verify Gondolin spool merge services are active
+  ansible.builtin.command: systemctl is-active "open-creel-claw-merge-{{ item.name }}.service"
+  register: merge_service_active
+  retries: 10
+  delay: 2
+  until: merge_service_active.stdout == "active"
+  changed_when: false
+  loop: "{{ gondolin_merge_streams }}"
+
+- name: Include collector proof tasks
+  ansible.builtin.import_tasks: proof.yml

@@ -3,9 +3,11 @@
 .PHONY: help
 help:
 	@echo "Targets:"
-	@echo "  make infra           Run core system setup and install Zeek (sudo/become prompts)"
-	@echo "  make vendor/gondolin Clone Gondolin from GitHub into vendor/gondolin"
-	@echo "  make provision       Provision baseline infra + Gondolin OpenClaw runtime + bronze proof + guest hello task"
+	@echo "  make sandbox         Provision Layer 1: Gondolin sandbox VM lifecycle and ingress proof (sudo/become prompts)"
+	@echo "  make openclaw        Provision Layer 2: OpenClaw runtime checks and gateway probe inside guest (no sudo expected)"
+	@echo "  make telemetry       Provision Layer 3: Zeek + eBPF + journal + bronze merge services (sudo/become prompts)"
+	@echo "  make provision       Provision Layers 1-3 in order: sandbox + openclaw + telemetry"
+	@echo "  make infra           Backward-compatible alias for make telemetry"
 	@echo "  make restart-openclaw-journal  Restart OpenClaw journal collector service (sudo prompt)"
 	@echo "  make lint            Run Ansible syntax-check + Ruff lint checks"
 	@echo "  make typecheck       Run Ty static type checks"
@@ -50,41 +52,33 @@ SILVER_ROOT_URI ?= /tmp/open-creel/data/silver/ocsf
 GOLD_ROOT_URI ?= /tmp/open-creel/data/gold/ocsf
 PART_NAME ?= part-00000.parquet
 DOMAIN ?=
-GONDOLIN_HOST_DIR ?= vendor/gondolin/host
-GONDOLIN_CLI ?= $(GONDOLIN_HOST_DIR)/dist/bin/gondolin.js
 GONDOLIN_REPO ?= https://github.com/earendil-works/gondolin.git
+SANDBOX_GATEWAY_HOST ?= 127.0.0.1
+SANDBOX_GATEWAY_PORT ?= 38070
 CLAW_GATEWAY_HOST ?= 127.0.0.1
 CLAW_GATEWAY_PORT ?= 38080
 ANSIBLE_LOCAL_TEMP ?= /tmp/open-creel-ansible/local
 ANSIBLE_REMOTE_TEMP ?= /tmp/open-creel-ansible/remote
 ANSIBLE_PLAYBOOK = ANSIBLE_LOCAL_TEMP="$(ANSIBLE_LOCAL_TEMP)" ANSIBLE_REMOTE_TEMP="$(ANSIBLE_REMOTE_TEMP)" ansible-playbook
 
-.PHONY: infra provision restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
+.PHONY: infra sandbox openclaw telemetry provision restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
-infra:
-	$(ANSIBLE_PLAYBOOK) provision/creel.yml -c local -K
+sandbox:
+	$(ANSIBLE_PLAYBOOK) provision/sandbox.yml -c local -K -e "gondolin_repo_url=$(GONDOLIN_REPO)" -e "gondolin_sandbox_host=$(SANDBOX_GATEWAY_HOST)" -e "gondolin_sandbox_port=$(SANDBOX_GATEWAY_PORT)"
 	$(call success)
 
-vendor/gondolin: vendor
-	git clone "$(GONDOLIN_REPO)" vendor/gondolin
+openclaw:
+	$(ANSIBLE_PLAYBOOK) provision/openclaw.yml -c local -e "openclaw_gateway_host=$(CLAW_GATEWAY_HOST)" -e "openclaw_gateway_port=$(CLAW_GATEWAY_PORT)"
 	$(call success)
 
-vendor:
-	mkdir -p vendor
+telemetry: openclaw
+	$(ANSIBLE_PLAYBOOK) provision/telemetry.yml -c local -K
 	$(call success)
 
-provision:
-	$(MAKE) vendor/gondolin
-	$(ANSIBLE_PLAYBOOK) provision/claw.yml -c local -K -e "openclaw_gateway_host=$(CLAW_GATEWAY_HOST)" -e "openclaw_gateway_port=$(CLAW_GATEWAY_PORT)"
-	$(MAKE) bronze
+infra: telemetry
 	$(call success)
 
-$(GONDOLIN_HOST_DIR)/node_modules: vendor/gondolin
-	cd "$(GONDOLIN_HOST_DIR)" && npm install
-	$(call success)
-
-$(GONDOLIN_CLI): $(GONDOLIN_HOST_DIR)/node_modules
-	cd "$(GONDOLIN_HOST_DIR)" && npm run build
+provision: sandbox openclaw telemetry
 	$(call success)
 
 restart-openclaw-journal:

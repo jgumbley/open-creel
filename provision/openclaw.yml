@@ -1,0 +1,10 @@
+- name: Provision OpenClaw layer
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: true
+  vars:
+    claw_gateway_host: "{{ openclaw_gateway_host | default('127.0.0.1') }}"
+    claw_gateway_port: "{{ openclaw_gateway_port | default(38080) }}"
+  roles:
+    - openclaw

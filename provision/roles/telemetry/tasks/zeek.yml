@@ -47,18 +47,9 @@
     - /var/lib/open-creel/data/bronze/zeek/ssl.log
     - /var/lib/open-creel/data/bronze/zeek/notice.log
 
-- name: Pick capture interface from default route
-  ansible.builtin.shell: |
-    set -euo pipefail
-    ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'
-  register: creel_iface_cmd
-  changed_when: false
-  args:
-    executable: /bin/bash
-
 - name: Set capture interface fact
   ansible.builtin.set_fact:
-    creel_iface: "{{ creel_iface_cmd.stdout }}"
+    creel_iface: "{{ ansible_default_ipv4.interface }}"
 
 - name: Install open-creel Zeek systemd unit
   ansible.builtin.copy:
