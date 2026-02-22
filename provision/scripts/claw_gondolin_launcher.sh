@@ -26,17 +26,8 @@ cat > /tmp/openclaw-gateway/run.sh <<'GATEWAY_SCRIPT'
 set -eu
 
 mkdir -p /tmp/openclaw-gateway/www
-(
-  while :; do
-    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf '{"status":"ok","service":"openclaw-gateway","time":"%s"}\n' "${ts}" > /tmp/openclaw-gateway/www/index.html
-    sleep 1
-  done
-) &
-writer_pid="$!"
-trap 'kill "${writer_pid}" 2>/dev/null || true' EXIT INT TERM
-
-busybox httpd -f -p 127.0.0.1:18080 -h /tmp/openclaw-gateway/www
+printf '{"status":"ok","service":"openclaw-gateway"}\n' > /tmp/openclaw-gateway/www/index.html
+exec python -m http.server 18080 --bind 127.0.0.1 --directory /tmp/openclaw-gateway/www
 GATEWAY_SCRIPT
 chmod +x /tmp/openclaw-gateway/run.sh
 
