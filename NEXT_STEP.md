@@ -37,18 +37,20 @@ After sudo/become prompts (Ansible), the system should end with:
 
 ## `make` interface changes
 - Add `make claw` target:
+  - Declares baseline dependency at the Make layer (`make claw` invokes/depends on `make infra` first).
   - Runs the Ansible path that provisions/updates Gondolin + OpenClaw-in-Gondolin units.
   - Ensures services are enabled and started.
   - Prints health/proof summary.
-- Keep `make infra` for baseline sensor provisioning.
+- Keep `make infra` standalone for baseline sensor provisioning (operator can run it independently).
+- Keep dependency wiring in Makefile, not as an Ansible playbook-to-playbook dependency.
 - Keep `make bronze|silver|gold` unchanged for later development (STAY IN YOUR LANE)
 
 ## Acceptance criteria
 1. Fresh clone to running system:
    - `make claw` completes with no manual file edits.
+   - `make claw` succeeds from clean state by running baseline infra before claw-specific orchestration.
 2. OpenClaw in Gondolin:
    - OpenClaw gateway process is running in guest and reachable via configured ingress.
 3. Bronze proof:
    - `make bronze` shows fresh runtime/audit/tool/auth lines.
    - Host network telemetry and guest-attributed process/file telemetry both appear.
-
