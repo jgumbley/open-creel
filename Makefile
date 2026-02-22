@@ -4,6 +4,7 @@
 help:
 	@echo "Targets:"
 	@echo "  make sandbox         Provision Layer 1: Gondolin sandbox VM lifecycle + guest SSH inventory generation (sudo/become prompts)"
+	@echo "  make clean-sandbox   Stop/remove Gondolin sandbox systemd service and current VM state so make sandbox provisions fresh"
 	@echo "  make openclaw        Provision Layer 2: OpenClaw runtime checks and gateway probe inside guest over SSH (no sudo expected)"
 	@echo "  make telemetry       Provision Layer 3: Zeek + eBPF + journal + bronze merge services (sudo/become prompts)"
 	@echo "  make provision       Provision Layers 1-3 in order: sandbox + openclaw + telemetry"
@@ -60,10 +61,14 @@ ANSIBLE_LOCAL_TEMP ?= /tmp/open-creel-ansible/local
 ANSIBLE_REMOTE_TEMP ?= /tmp/open-creel-ansible/remote
 ANSIBLE_PLAYBOOK = ANSIBLE_LOCAL_TEMP="$(ANSIBLE_LOCAL_TEMP)" ANSIBLE_REMOTE_TEMP="$(ANSIBLE_REMOTE_TEMP)" ansible-playbook
 
-.PHONY: infra sandbox openclaw telemetry provision restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
+.PHONY: infra sandbox clean-sandbox openclaw telemetry provision restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 sandbox:
 	$(ANSIBLE_PLAYBOOK) provision/sandbox.yml -c local -K -e "gondolin_ssh_port=$(GONDOLIN_SSH_PORT)"
+	$(call success)
+
+clean-sandbox:
+	$(ANSIBLE_PLAYBOOK) provision/sandbox.yml -c local -K -e "sandbox_state=absent"
 	$(call success)
 
 openclaw:

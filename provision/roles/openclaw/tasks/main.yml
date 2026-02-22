@@ -7,6 +7,46 @@
       - "set -euo pipefail; command -v node; node --version; command -v npm; npm --version"
   changed_when: false
 
+- name: Check npm registry client health inside Gondolin guest
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -lc
+      - "set -euo pipefail; npm view openclaw version >/dev/null"
+  register: openclaw_npm_health
+  changed_when: false
+  failed_when: false
+
+- name: Repair npm inside Gondolin guest when registry client is broken
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -lc
+      - |
+        set -euo pipefail
+        if command -v apk >/dev/null 2>&1; then
+          apk update
+          apk fix --no-interactive nodejs npm
+          exit 0
+        fi
+        if command -v apt-get >/dev/null 2>&1; then
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --reinstall nodejs npm
+          exit 0
+        fi
+        echo "unsupported guest package manager for npm repair" >&2
+        exit 1
+  when: openclaw_npm_health.rc != 0
+
+- name: Verify npm registry client health after repair
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - -lc
+      - "set -euo pipefail; npm view openclaw version >/dev/null"
+  changed_when: false
+
 - name: Ensure guest cache directory exists for OpenClaw install
   ansible.builtin.file:
     path: /opt/openclaw-cache
