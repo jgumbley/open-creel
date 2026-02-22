@@ -1,71 +1,87 @@
 ---
-- name: Verify Node and npm dependencies inside Gondolin guest
-  ansible.builtin.command:
-    argv:
-      - /bin/sh
-      - -lc
-      - "set -euo pipefail; command -v node; node --version; command -v npm; npm --version"
-  changed_when: false
-
-- name: Check npm registry client health inside Gondolin guest
-  ansible.builtin.command:
-    argv:
-      - /bin/sh
-      - -lc
-      - "set -euo pipefail; npm view openclaw version >/dev/null"
-  register: openclaw_npm_health
-  changed_when: false
-  failed_when: false
-
-- name: Repair npm inside Gondolin guest when registry client is broken
-  ansible.builtin.command:
-    argv:
-      - /bin/sh
-      - -lc
-      - |
-        set -euo pipefail
-        if command -v apk >/dev/null 2>&1; then
-          apk update
-          apk fix --no-interactive nodejs npm
-          exit 0
-        fi
-        if command -v apt-get >/dev/null 2>&1; then
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update
-          apt-get install -y --reinstall nodejs npm
-          exit 0
-        fi
-        echo "unsupported guest package manager for npm repair" >&2
-        exit 1
-  when: openclaw_npm_health.rc != 0
-
-- name: Verify npm registry client health after repair
-  ansible.builtin.command:
-    argv:
-      - /bin/sh
-      - -lc
-      - "set -euo pipefail; npm view openclaw version >/dev/null"
-  changed_when: false
-
-- name: Ensure guest cache directory exists for OpenClaw install
+- name: Ensure OpenClaw data directory exists inside Gondolin guest
   ansible.builtin.file:
-    path: /opt/openclaw-cache
+    path: /spool/openclaw
     state: directory
     mode: "0755"
 
-- name: Install OpenClaw CLI inside Gondolin guest
+- name: Ensure OpenClaw npm global prefix directory exists inside Gondolin guest
+  ansible.builtin.file:
+    path: /spool/openclaw/npm-global
+    state: directory
+    mode: "0755"
+
+- name: Ensure OpenClaw npm cache directory exists inside Gondolin guest
+  ansible.builtin.file:
+    path: /spool/openclaw/npm-cache
+    state: directory
+    mode: "0755"
+
+- name: Ensure OpenClaw home directory exists inside Gondolin guest
+  ansible.builtin.file:
+    path: /spool/openclaw/home
+    state: directory
+    mode: "0755"
+
+- name: Require working Node.js and npm with node:sqlite inside Gondolin guest
+  ansible.builtin.shell: |
+    set -euo pipefail
+    node --version >/dev/null
+    npm --version >/dev/null
+    node -e "require('node:sqlite')"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Self-update npm inside Gondolin guest
+  ansible.builtin.shell: curl -qL https://npmjs.org/install.sh | sh
+  args:
+    executable: /bin/bash
+  environment:
+    npm_config_cache: /spool/openclaw/npm-cache
+    HOME: /spool/openclaw/home
+
+- name: Ensure git is present inside Gondolin guest
+  ansible.builtin.package:
+    name: git
+    state: present
+
+- name: Install OpenClaw CLI into spool-backed npm prefix inside Gondolin guest
   ansible.builtin.command:
     argv:
-      - /bin/sh
-      - -lc
-      - "set -euo pipefail; export NPM_CONFIG_PREFIX=/opt/openclaw-cache/prefix; export PATH=$NPM_CONFIG_PREFIX/bin:$PATH; npm install -g openclaw@latest; command -v openclaw; openclaw --version"
+      - npm
+      - install
+      - -g
+      - --prefix
+      - /spool/openclaw/npm-global
+      - openclaw@latest
+  args:
+    creates: /spool/openclaw/npm-global/bin/openclaw
+  environment:
+    npm_config_cache: /spool/openclaw/npm-cache
+    HOME: /spool/openclaw/home
+
+- name: Verify OpenClaw CLI inside Gondolin guest
+  ansible.builtin.command:
+    argv:
+      - /spool/openclaw/npm-global/bin/openclaw
+      - --version
+  changed_when: false
 
 - name: Start temporary OpenClaw gateway session for in-guest probe
   ansible.builtin.command:
     argv:
-      - /bin/sh
-      - -lc
-      - "set -euo pipefail; export NPM_CONFIG_PREFIX=/opt/openclaw-cache/prefix; export PATH=$NPM_CONFIG_PREFIX/bin:$PATH; command -v openclaw; openclaw --version; mkdir -p /tmp/openclaw/home; exec timeout 300 env OPENCLAW_HOME=/tmp/openclaw/home openclaw gateway --allow-unconfigured --dev --port {{ claw_gateway_port | int }} --verbose"
+      - timeout
+      - "300"
+      - /spool/openclaw/npm-global/bin/openclaw
+      - gateway
+      - --allow-unconfigured
+      - --dev
+      - --port
+      - "{{ claw_gateway_port | int | string }}"
+      - --verbose
+  environment:
+    OPENCLAW_HOME: /spool/openclaw/home
   register: openclaw_gateway_session
   async: 360
   poll: 0
@@ -88,9 +104,9 @@
 - name: Stop temporary OpenClaw gateway session
   ansible.builtin.command:
     argv:
-      - /bin/sh
-      - -lc
-      - "pkill -f 'openclaw gateway --allow-unconfigured --dev --port {{ claw_gateway_port | int }}'"
+      - pkill
+      - -f
+      - "/spool/openclaw/npm-global/bin/openclaw gateway --allow-unconfigured --dev --port {{ claw_gateway_port | int }}"
   register: openclaw_gateway_stop
   changed_when: openclaw_gateway_stop.rc == 0
   failed_when: openclaw_gateway_stop.rc not in [0, 1]
