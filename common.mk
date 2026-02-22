@@ -2,7 +2,7 @@
 
 define success
 	@printf '\033[32m\n'; \
-	set -- 🦴 💉 🐶 😺 💊; \
+	set -- 🦞 🥅 🪤 🎣 🦀; \
 	icon_idx=$$(( $$(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % $$# + 1 )); \
 	while [ $$icon_idx -gt 1 ]; do shift; icon_idx=$$((icon_idx - 1)); done; \
 	icon=$$1; \

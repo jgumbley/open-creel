@@ -5,7 +5,7 @@ help:
 	@echo "Targets:"
 	@echo "  make infra           Run core system setup and install Zeek (sudo/become prompts)"
 	@echo "  make vendor/gondolin Clone Gondolin from GitHub into vendor/gondolin"
-	@echo "  make claw            Provision baseline infra + Gondolin OpenClaw runtime + bronze proof"
+	@echo "  make provision       Provision baseline infra + Gondolin OpenClaw runtime + bronze proof + guest hello task"
 	@echo "  make restart-openclaw-journal  Restart OpenClaw journal collector service (sudo prompt)"
 	@echo "  make lint            Run Ansible syntax-check + Ruff lint checks"
 	@echo "  make typecheck       Run Ty static type checks"
@@ -23,6 +23,7 @@ help:
 	@echo "  make bronze-dns-domain-check DOMAIN=example.com  Search bronze DNS queries for a domain"
 	@echo "  make clean-silver    Remove generated silver output"
 	@echo "  make clean-gold      Remove generated gold output"
+	$(call success)
 
 include common.mk
 
@@ -58,30 +59,37 @@ ANSIBLE_LOCAL_TEMP ?= /tmp/open-creel-ansible/local
 ANSIBLE_REMOTE_TEMP ?= /tmp/open-creel-ansible/remote
 ANSIBLE_PLAYBOOK = ANSIBLE_LOCAL_TEMP="$(ANSIBLE_LOCAL_TEMP)" ANSIBLE_REMOTE_TEMP="$(ANSIBLE_REMOTE_TEMP)" ansible-playbook
 
-.PHONY: infra claw restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
+.PHONY: infra provision restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 infra:
 	$(ANSIBLE_PLAYBOOK) provision/creel.yml -c local -K
+	$(call success)
 
 vendor/gondolin: vendor
 	git clone "$(GONDOLIN_REPO)" vendor/gondolin
+	$(call success)
 
 vendor:
 	mkdir -p vendor
+	$(call success)
 
-claw:
+provision:
 	$(MAKE) vendor/gondolin
 	$(ANSIBLE_PLAYBOOK) provision/claw.yml -c local -K -e "openclaw_gateway_host=$(CLAW_GATEWAY_HOST)" -e "openclaw_gateway_port=$(CLAW_GATEWAY_PORT)"
 	$(MAKE) bronze
+	$(call success)
 
 $(GONDOLIN_HOST_DIR)/node_modules: vendor/gondolin
 	cd "$(GONDOLIN_HOST_DIR)" && npm install
+	$(call success)
 
 $(GONDOLIN_CLI): $(GONDOLIN_HOST_DIR)/node_modules
 	cd "$(GONDOLIN_HOST_DIR)" && npm run build
+	$(call success)
 
 restart-openclaw-journal:
 	sudo systemctl restart open-creel-openclaw-journal.service
+	$(call success)
 
 bronze:
 	ls -lah /var/lib/open-creel/data/bronze/zeek
@@ -102,47 +110,60 @@ bronze:
 	tail -n 1 "$(BRONZE_OPENCLAW_APPROVALS_URI)"
 	tail -n 1 "$(BRONZE_OPENCLAW_SKILLS_URI)"
 	tail -n 1 "$(BRONZE_OPENCLAW_AUTH_URI)"
+	$(call success)
 
 silver: .venv/
 	$(PYTHON) -m open_creel.cli silver --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-http-uri "$(BRONZE_HTTP_URI)" --bronze-ssl-uri "$(BRONZE_SSL_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --part-name "$(PART_NAME)"
+	$(call success)
 
 silver-show-latest: .venv/
 	$(PYTHON) -m open_creel.cli silver-show-latest --silver-uri "$(SILVER_ROOT_URI)"
+	$(call success)
 
 silver-proof: silver-show-latest
 
 silver-network-summary: .venv/
 	$(PYTHON) -m open_creel.cli silver-network-summary --silver-uri "$(SILVER_ROOT_URI)"
+	$(call success)
 
 silver-network-top-dst-hour: .venv/
 	$(PYTHON) -m open_creel.cli silver-network-top-dst-hour --silver-uri "$(SILVER_ROOT_URI)"
+	$(call success)
 
 silver-top-dst-hour: silver-network-top-dst-hour
 
 silver-domain-check: .venv/
 	$(PYTHON) -m open_creel.cli silver-domain-check --silver-uri "$(SILVER_ROOT_URI)" --domain "$(DOMAIN)"
+	$(call success)
 
 gold: .venv/
 	$(PYTHON) -m open_creel.cli gold --bronze-conn-uri "$(BRONZE_CONN_URI)" --bronze-dns-uri "$(BRONZE_DNS_URI)" --bronze-http-uri "$(BRONZE_HTTP_URI)" --bronze-ssl-uri "$(BRONZE_SSL_URI)" --bronze-ebpf-exec-uri "$(BRONZE_EBPF_EXEC_URI)" --bronze-ebpf-fileaccess-uri "$(BRONZE_EBPF_FILEACCESS_URI)" --bronze-ebpf-connect-uri "$(BRONZE_EBPF_CONNECT_URI)" --silver-uri "$(SILVER_ROOT_URI)" --gold-uri "$(GOLD_ROOT_URI)" --part-name "$(PART_NAME)"
+	$(call success)
 
 gold-show-latest: .venv/
 	$(PYTHON) -m open_creel.cli gold-show-latest --gold-uri "$(GOLD_ROOT_URI)"
+	$(call success)
 
 gold-proof: gold-show-latest
 
 gold-list: .venv/
 	$(PYTHON) -m open_creel.cli gold-list --gold-uri "$(GOLD_ROOT_URI)"
+	$(call success)
 
 gold-list-severity-ge3: .venv/
 	$(PYTHON) -m open_creel.cli gold-list-severity-ge3 --gold-uri "$(GOLD_ROOT_URI)"
+	$(call success)
 
 gold-severity-ge3: gold-list-severity-ge3
 
 bronze-dns-domain-check: .venv/
 	$(PYTHON) -m open_creel.cli bronze-dns-domain-check --bronze-dns-uri "$(BRONZE_DNS_URI)" --domain "$(DOMAIN)"
+	$(call success)
 
 clean-silver:
 	rm -rf "$(SILVER_ROOT_URI)"
+	$(call success)
 
 clean-gold:
 	rm -rf "$(GOLD_ROOT_URI)"
+	$(call success)

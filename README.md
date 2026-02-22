@@ -13,7 +13,7 @@ Provisioning layout:
 - `provision/roles/` Ansible roles
 - `provision/scripts/` provisioning helper scripts
 
-Current topology after running `make claw`:
+Current topology after running `make provision`:
 
 ```text
 host-machine (ubuntu)
