@@ -16,4 +16,5 @@
 - YAGNI - build only what this stub needs.
 - DRY - if something exists, reuse it.
 - KISS - keep it straightforward; no optional branches or toggles.
+- If in doubt, don't; prefer minimal changes.
 - No fallbacks - they hide failures; let issues surface immediately.

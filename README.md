@@ -1,7 +1,33 @@
 OpenClaw Host Monitoring
 
-Local security data lake for a single Ubuntu machine running OpenClaw.
-Provisioning in this repo installs OpenCreel (the monitor), not OpenClaw itself.
+Sandbox and Local security data lake for openclaw.
+The purpose is developing an approach to the control of permission hungry agents.
+Provisioning in this repo installs OpenCreel (the monitor), and a sandbox with OpenClaw itself.
+
+Current topology after running `make infra`:
+
+```text
+host-machine (ubuntu)
+├── host changes from make infra
+│   ├── apt/repo
+│   │   ├── Zeek signing key installed
+│   │   ├── Zeek apt repository added
+│   │   └── Zeek installed
+│   ├── directories created
+│   │   ├── /var/lib/open-creel/data/bronze/{zeek,ebpf,openclaw}
+│   │   ├── /var/lib/open-creel/data/{silver,gold}
+│   │   └── /etc/open-creel/{zeek,ebpf}
+│   ├── systemd units/scripts installed
+│   │   ├── open-creel-zeek.service
+│   │   ├── open-creel-ebpf-{exec,fileaccess,connect}.service
+│   │   └── open-creel-openclaw-journal.service
+│   └── services enabled + started + restarted
+│       └── active checks passed; proof showed zeek/ebpf data being written
+└── gondolin-vm
+    ├── no VM created or modified
+    ├── no OpenClaw-in-Gondolin gateway started
+    └── reason: `make claw` is still a TODO stub
+```
 
 Thin slice:
 - Bronze:
