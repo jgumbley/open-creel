@@ -5,5 +5,7 @@
   gather_facts: true
   vars:
     gondolin_repo: "{{ gondolin_repo_url | default('https://github.com/earendil-works/gondolin.git') }}"
+    gondolin_ref: "{{ gondolin_repo_ref | default('f221ec2') }}"
+    gondolin_guest_dir: "{{ playbook_dir | dirname }}/.gondolin-openclaw-assets"
   roles:
     - sandbox

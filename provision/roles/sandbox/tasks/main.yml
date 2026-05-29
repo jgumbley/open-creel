@@ -9,9 +9,51 @@
       - open_creel_sandbox_state in ["present", "absent"]
     fail_msg: "sandbox_state must be one of: present, absent"
 
+- name: Normalize Gondolin guest assets directory
+  ansible.builtin.set_fact:
+    open_creel_gondolin_guest_dir: "{{ gondolin_guest_dir | default('') | trim }}"
+
 - name: Provision sandbox layer
   when: open_creel_sandbox_state == "present"
   block:
+    - name: Require Gondolin guest assets directory
+      ansible.builtin.assert:
+        that:
+          - open_creel_gondolin_guest_dir != ""
+        fail_msg: "gondolin_guest_dir must be set to a Gondolin guest assets directory"
+
+    - name: Check Gondolin guest assets directory exists
+      ansible.builtin.stat:
+        path: "{{ open_creel_gondolin_guest_dir }}"
+      register: gondolin_guest_dir_stat
+
+    - name: Require Gondolin guest assets directory to exist
+      ansible.builtin.assert:
+        that:
+          - gondolin_guest_dir_stat.stat.exists
+          - gondolin_guest_dir_stat.stat.isdir
+        fail_msg: >-
+          gondolin_guest_dir '{{ open_creel_gondolin_guest_dir }}' must exist and be a directory
+
+    - name: Check required files in Gondolin guest assets directory
+      ansible.builtin.stat:
+        path: "{{ open_creel_gondolin_guest_dir }}/{{ item }}"
+      loop:
+        - manifest.json
+        - vmlinuz-virt
+        - initramfs.cpio.lz4
+        - rootfs.ext4
+      register: gondolin_guest_asset_files
+
+    - name: Require all Gondolin guest asset files
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+        fail_msg: >-
+          missing required Gondolin guest asset file '{{ open_creel_gondolin_guest_dir }}/{{ item.item }}'
+      loop: "{{ gondolin_guest_asset_files.results }}"
+
     - name: Ensure sandbox host prerequisites are installed
       ansible.builtin.apt:
         name:
@@ -45,6 +87,7 @@
       ansible.builtin.git:
         repo: "{{ gondolin_repo }}"
         dest: "{{ playbook_dir | dirname }}/vendor/gondolin"
+        version: "{{ gondolin_ref }}"
         update: true
         force: true
       become: false
@@ -75,6 +118,7 @@
 
           [Service]
           Type=simple
+          Environment=GONDOLIN_GUEST_DIR={{ open_creel_gondolin_guest_dir }}
           WorkingDirectory={{ playbook_dir | dirname }}/vendor/gondolin/host
           ExecStart=node {{ playbook_dir | dirname }}/vendor/gondolin/host/dist/bin/gondolin.js bash --ssh --ssh-user root --ssh-listen 127.0.0.1 --ssh-port {{ gondolin_ssh_port | default(3222) | int }} --mount-hostfs /var/lib/open-creel/data/spool/gondolin:/spool --mount-hostfs {{ playbook_dir | dirname }}:/workspace -- /bin/sh -lc 'set -euo pipefail; exec tail -f /dev/null'
           Restart=always

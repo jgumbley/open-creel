@@ -6,6 +6,17 @@ The purpose is developing an approach to controlling permission-hungry agents.
 Host prerequisites (assumed, not managed by Ansible in this repo):
 - Node.js
 - npm
+- Docker or Podman (for OCI-rootfs guest image export during `make sandbox-build-openclaw-guest`)
+
+From a clean sandbox to running OpenClaw:
+1. `./pane.sh clean-sandbox make clean-sandbox`
+2. `./pane.sh build-guest make sandbox-build-openclaw-guest`
+3. `./pane.sh sandbox make sandbox`
+4. `make openclaw`
+
+Notes:
+- The sandbox always boots from `.gondolin-openclaw-assets` under this repo.
+- `make openclaw` includes a gateway startup and HTTP probe inside the guest; a successful run means OpenClaw is up in the Gondolin guest.
 
 Provisioning layers:
 - Layer 1 (`make sandbox`): Gondolin VM lifecycle for guest sessions.

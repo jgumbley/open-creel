@@ -3,7 +3,8 @@
 .PHONY: help
 help:
 	@echo "Targets:"
-	@echo "  make sandbox         Provision Layer 1: Gondolin sandbox VM lifecycle + guest SSH inventory generation (sudo/become prompts)"
+	@echo "  make sandbox         Provision Layer 1: Gondolin sandbox VM lifecycle + guest SSH inventory generation (sudo/become prompts; uses .gondolin-openclaw-assets)"
+	@echo "  make sandbox-build-openclaw-guest  Build Gondolin guest assets from node:22-bookworm OCI rootfs (sudo prompt; run via ./pane.sh)"
 	@echo "  make clean-sandbox   Stop/remove Gondolin sandbox systemd service and current VM state so make sandbox provisions fresh"
 	@echo "  make openclaw        Provision Layer 2: OpenClaw runtime checks and gateway probe inside guest over SSH (no sudo expected)"
 	@echo "  make telemetry       Provision Layer 3: Zeek + eBPF + journal + bronze merge services (sudo/become prompts)"
@@ -56,15 +57,55 @@ DOMAIN ?=
 CLAW_GATEWAY_HOST ?= 127.0.0.1
 CLAW_GATEWAY_PORT ?= 38080
 GONDOLIN_SSH_PORT ?= 3222
+GONDOLIN_REPO_REF ?= f221ec2
+GONDOLIN_OPENCLAW_OCI_IMAGE ?= docker.io/library/node:22-bookworm
+GONDOLIN_OPENCLAW_OCI_PLATFORM ?= linux/amd64
+GONDOLIN_OPENCLAW_ASSETS_DIR ?= $(CURDIR)/.gondolin-openclaw-assets
+GONDOLIN_OPENCLAW_BUILD_CONFIG ?= /tmp/open-creel-gondolin-openclaw-build-config.json
 GONDOLIN_INVENTORY ?= provision/gondolin_inventory
 ANSIBLE_LOCAL_TEMP ?= /tmp/open-creel-ansible/local
 ANSIBLE_REMOTE_TEMP ?= /tmp/open-creel-ansible/remote
 ANSIBLE_PLAYBOOK = ANSIBLE_LOCAL_TEMP="$(ANSIBLE_LOCAL_TEMP)" ANSIBLE_REMOTE_TEMP="$(ANSIBLE_REMOTE_TEMP)" ansible-playbook
 
-.PHONY: infra sandbox clean-sandbox openclaw telemetry provision restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
+.PHONY: infra sandbox sandbox-build-openclaw-guest clean-sandbox openclaw telemetry provision restart-openclaw-journal lint typecheck test bronze silver silver-show-latest silver-proof silver-network-summary silver-network-top-dst-hour silver-top-dst-hour silver-domain-check gold gold-show-latest gold-proof gold-list gold-list-severity-ge3 gold-severity-ge3 bronze-dns-domain-check clean-silver clean-gold
 
 sandbox:
-	$(ANSIBLE_PLAYBOOK) provision/sandbox.yml -c local -K -e "gondolin_ssh_port=$(GONDOLIN_SSH_PORT)"
+	@test -f "$(GONDOLIN_OPENCLAW_ASSETS_DIR)/manifest.json" || (echo "missing $(GONDOLIN_OPENCLAW_ASSETS_DIR)/manifest.json; run make sandbox-build-openclaw-guest first" >&2; exit 1)
+	$(ANSIBLE_PLAYBOOK) provision/sandbox.yml -c local -K -e "gondolin_ssh_port=$(GONDOLIN_SSH_PORT)" -e "gondolin_repo_ref=$(GONDOLIN_REPO_REF)"
+	$(call success)
+
+sandbox-build-openclaw-guest:
+	@mkdir -p "$(dir $(GONDOLIN_OPENCLAW_BUILD_CONFIG))" "$(GONDOLIN_OPENCLAW_ASSETS_DIR)"
+	@cat >"$(GONDOLIN_OPENCLAW_BUILD_CONFIG)" <<-'EOF'
+	{
+	  "arch": "x86_64",
+	  "distro": "alpine",
+	  "alpine": {
+	    "version": "3.23.0",
+	    "kernelPackage": "linux-virt",
+	    "kernelImage": "vmlinuz-virt",
+	    "initramfsPackages": []
+	  },
+	  "oci": {
+	    "image": "$(GONDOLIN_OPENCLAW_OCI_IMAGE)",
+	    "platform": "$(GONDOLIN_OPENCLAW_OCI_PLATFORM)",
+	    "pullPolicy": "if-not-present"
+	  },
+	  "postBuild": {
+	    "commands": [
+	      "apt-get update",
+	      "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server git build-essential python3 ca-certificates curl",
+	      "rm -rf /var/lib/apt/lists/*"
+	    ]
+	  }
+	}
+	EOF
+	@echo "using Gondolin build config $(GONDOLIN_OPENCLAW_BUILD_CONFIG)"
+	@echo "output assets dir $(GONDOLIN_OPENCLAW_ASSETS_DIR)"
+	git -C vendor/gondolin fetch --quiet origin
+	git -C vendor/gondolin checkout --quiet "$(GONDOLIN_REPO_REF)"
+	cd vendor/gondolin/host && npm install && npm run build
+	sudo node "$(CURDIR)/vendor/gondolin/host/dist/bin/gondolin.js" build --config "$(GONDOLIN_OPENCLAW_BUILD_CONFIG)" --output "$(GONDOLIN_OPENCLAW_ASSETS_DIR)"
 	$(call success)
 
 clean-sandbox:
